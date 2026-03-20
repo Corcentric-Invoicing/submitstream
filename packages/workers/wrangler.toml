@@ -1,0 +1,19 @@
+name = "corcentric-invoicing-api"
+main = "src/api/index.ts"
+compatibility_date = "2024-06-01"
+
+# R2 bucket binding
+[[r2_buckets]]
+binding = "INVOICE_PDFS"
+bucket_name = "invoice-pdfs"
+
+# Environment variables (secrets set via `wrangler secret put`)
+[vars]
+SUPABASE_URL = "https://nwzmjtlphpmwaawyrgax.supabase.co"
+ENVIRONMENT = "production"
+
+# Secrets (set via wrangler secret put <KEY>):
+# SUPABASE_SERVICE_ROLE_KEY
+# SUPABASE_ANON_KEY
+# MISTRAL_API_KEY
+# ANTHROPIC_API_KEY
