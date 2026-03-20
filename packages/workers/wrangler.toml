@@ -1,6 +1,7 @@
-name = "corcentric-invoicing-api"
-main = "src/api/index.ts"
+name = "corcentric-invoicing"
+main = "src/index.ts"
 compatibility_date = "2024-06-01"
+compatibility_flags = ["nodejs_compat"]
 
 # R2 bucket binding
 [[r2_buckets]]
@@ -11,6 +12,9 @@ bucket_name = "invoice-pdfs"
 [vars]
 SUPABASE_URL = "https://nwzmjtlphpmwaawyrgax.supabase.co"
 ENVIRONMENT = "production"
+
+# Email routing: receive emails sent to *@corcentricinvoices.com
+# Configure catch-all rule in Cloudflare Dashboard → Email Routing → Routing Rules
 
 # Secrets (set via wrangler secret put <KEY>):
 # SUPABASE_SERVICE_ROLE_KEY
