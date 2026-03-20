@@ -2,12 +2,14 @@ import { useEffect, useState } from 'react';
 import { supabase } from '../lib/supabase';
 import type { Invoice } from '../types/invoice';
 import StatusBadge from '../components/StatusBadge';
+import InvoiceDetailDrawer from '../components/InvoiceDetailDrawer';
 
 export default function SupplierDashboard() {
   const [invoices, setInvoices] = useState<Invoice[]>([]);
   const [stats, setStats] = useState({ processed: 0, pending: 0, rejected: 0 });
   const [statusFilter, setStatusFilter] = useState<string>('all');
   const [loading, setLoading] = useState(true);
+  const [selectedInvoice, setSelectedInvoice] = useState<Invoice | null>(null);
 
   useEffect(() => {
     fetchInvoices();
@@ -50,16 +52,24 @@ export default function SupplierDashboard() {
   return (
     <div className="min-h-screen bg-gray-50">
       {/* Header */}
-      <header className="bg-white border-b border-gray-200 px-6 py-4">
-        <div className="flex items-center justify-between">
-          <h1 className="text-xl font-semibold text-gray-900">Corcentric Invoicing — Supplier Portal</h1>
+      <header className="bg-white border-b border-gray-200">
+        <div className="px-6 py-4 flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className="h-8 w-8 bg-green-600 rounded-lg flex items-center justify-center">
+              <span className="text-white font-bold text-sm">C</span>
+            </div>
+            <div>
+              <h1 className="text-lg font-semibold text-gray-900">Corcentric Invoicing</h1>
+              <p className="text-xs text-gray-500">Supplier Portal</p>
+            </div>
+          </div>
           <button onClick={handleSignOut} className="text-sm text-gray-500 hover:text-gray-700">
             Sign Out
           </button>
         </div>
       </header>
 
-      {/* Summary bar */}
+      {/* Summary pills */}
       <div className="px-6 py-6 flex gap-4">
         <SummaryPill emoji="🟢" label="Processed" count={stats.processed} onClick={() => setStatusFilter(statusFilter === 'processed' ? 'all' : 'processed')} active={statusFilter === 'processed'} />
         <SummaryPill emoji="🟡" label="Pending" count={stats.pending} onClick={() => setStatusFilter(statusFilter === 'pending' ? 'all' : 'pending')} active={statusFilter === 'pending'} />
@@ -82,20 +92,35 @@ export default function SupplierDashboard() {
             </thead>
             <tbody className="divide-y divide-gray-200">
               {loading ? (
-                <tr><td colSpan={6} className="px-4 py-8 text-center text-gray-500">Loading...</td></tr>
+                <tr><td colSpan={6} className="px-4 py-12 text-center text-gray-500">
+                  <div className="flex flex-col items-center gap-2">
+                    <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-gray-400" />
+                    <span className="text-sm">Loading invoices...</span>
+                  </div>
+                </td></tr>
               ) : invoices.length === 0 ? (
-                <tr><td colSpan={6} className="px-4 py-8 text-center text-gray-500">No invoices found</td></tr>
+                <tr><td colSpan={6} className="px-4 py-12 text-center">
+                  <div className="flex flex-col items-center gap-3">
+                    <div className="text-4xl">📋</div>
+                    <p className="text-sm font-medium text-gray-700">No invoices found</p>
+                    <p className="text-xs text-gray-500">Your submitted invoices will appear here.</p>
+                  </div>
+                </td></tr>
               ) : (
                 invoices.map((inv) => (
-                  <tr key={inv.id} className="hover:bg-gray-50">
+                  <tr
+                    key={inv.id}
+                    className="hover:bg-green-50/50 cursor-pointer transition-colors"
+                    onClick={() => setSelectedInvoice(inv)}
+                  >
                     <td className="px-4 py-3"><StatusBadge status={inv.status} /></td>
                     <td className="px-4 py-3 text-sm font-medium">
                       {(inv.invoice_data as Record<string, unknown>)?.InvoiceNumber as string || '—'}
                     </td>
                     <td className="px-4 py-3 text-sm text-gray-600">{inv.file_name}</td>
-                    <td className="px-4 py-3 text-sm">
+                    <td className="px-4 py-3 text-sm font-medium">
                       {(inv.invoice_data as Record<string, unknown>)?.InvoiceTotal
-                        ? `$${(inv.invoice_data as Record<string, unknown>).InvoiceTotal}`
+                        ? `$${Number((inv.invoice_data as Record<string, unknown>).InvoiceTotal).toLocaleString(undefined, { minimumFractionDigits: 2 })}`
                         : '—'}
                     </td>
                     <td className="px-4 py-3 text-xs text-gray-500">
@@ -103,16 +128,13 @@ export default function SupplierDashboard() {
                     </td>
                     <td className="px-4 py-3 text-sm">
                       {inv.status === 'pending' && (
-                        <span className="text-yellow-600">Under review — we'll update you when resolved</span>
+                        <span className="text-yellow-600">Under review</span>
                       )}
                       {inv.status === 'rejected' && inv.feedback && (
-                        <div>
-                          <span className="text-red-600 font-medium">Action needed: </span>
-                          <span className="text-gray-700">{inv.feedback}</span>
-                        </div>
+                        <span className="text-red-600 font-medium">Action needed</span>
                       )}
                       {inv.status === 'processed' && (
-                        <span className="text-green-600">Processed successfully</span>
+                        <span className="text-green-600">Complete</span>
                       )}
                     </td>
                   </tr>
@@ -122,6 +144,14 @@ export default function SupplierDashboard() {
           </table>
         </div>
       </div>
+
+      {/* Invoice detail drawer */}
+      {selectedInvoice && (
+        <InvoiceDetailDrawer
+          invoice={selectedInvoice}
+          onClose={() => setSelectedInvoice(null)}
+        />
+      )}
     </div>
   );
 }
