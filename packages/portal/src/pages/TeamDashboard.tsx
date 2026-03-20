@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { supabase } from '../lib/supabase';
-import type { Invoice } from '../../../../shared/src/types/invoice';
+import type { Invoice } from '../types/invoice';
 import StatusBadge from '../components/StatusBadge';
 
 interface Stats {
@@ -128,9 +128,9 @@ export default function TeamDashboard() {
                 invoices.map((inv) => (
                   <tr key={inv.id} className="hover:bg-gray-50">
                     <td className="px-4 py-3"><StatusBadge status={inv.status} /></td>
-                    <td className="px-4 py-3 text-sm font-medium">{(inv.invoice_data as Record<string, string>)?.InvoiceNumber || inv.file_name}</td>
+                    <td className="px-4 py-3 text-sm font-medium">{(inv.invoice_data as Record<string, unknown>)?.InvoiceNumber as string || inv.file_name}</td>
                     <td className="px-4 py-3 text-sm text-gray-600">{inv.supplier?.name || '—'}</td>
-                    <td className="px-4 py-3 text-sm">{(inv.invoice_data as Record<string, string>)?.InvoiceTotal ? `$${(inv.invoice_data as Record<string, string>).InvoiceTotal}` : '—'}</td>
+                    <td className="px-4 py-3 text-sm">{(inv.invoice_data as Record<string, unknown>)?.InvoiceTotal ? `$${(inv.invoice_data as Record<string, unknown>).InvoiceTotal}` : '—'}</td>
                     <td className="px-4 py-3 text-xs text-gray-500">{inv.source}</td>
                     <td className="px-4 py-3 text-xs text-gray-500">{inv.confidence || '—'}</td>
                     <td className="px-4 py-3 text-xs text-gray-500">{new Date(inv.created_at).toLocaleDateString()}</td>

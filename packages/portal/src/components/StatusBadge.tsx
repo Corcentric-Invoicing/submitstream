@@ -1,4 +1,4 @@
-import type { InvoiceStatus } from '../../../../shared/src/types/invoice';
+import type { InvoiceStatus } from '../types/invoice';
 
 const statusConfig: Record<InvoiceStatus, { label: string; bg: string; text: string; dot: string }> = {
   processing: { label: 'Processing', bg: 'bg-gray-100', text: 'text-gray-700', dot: 'bg-gray-400' },
