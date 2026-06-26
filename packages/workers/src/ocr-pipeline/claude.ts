@@ -19,6 +19,11 @@ CRITICAL REQUIREMENTS:
 - Empty/missing fields should be empty strings, not null or "N/A"
 - Return ONLY valid JSON, no markdown formatting
 
+SUBTOTAL vs DISCOUNTABLE AMOUNT:
+- Write the visible "Subtotal" / "Sub-total" / "Net amount" / "Net total" line to the Subtotal field. This is the standard pre-tax sum of line items.
+- Write to DiscountableAmount ONLY when the invoice explicitly labels a "discountable amount" or shows a separate amount eligible for an early-payment discount. Do NOT use DiscountableAmount as a generic subtotal.
+- Most invoices have Subtotal but no DiscountableAmount.
+
 Extract the following fields:
 {
   "InvoiceDate": "", "InvoiceNumber": "", "PODate": "", "PONumber": "", "Currency": "", "ShipDate": "",
@@ -28,7 +33,7 @@ Extract the following fields:
   "BillToName": "", "BillToCode": "", "BillToAddress1": "", "BillToAddress2": "", "BillToCity": "", "BillToState": "",
   "DueDate": "", "NetDays": "", "TermsDescription": "", "DiscountPercent": "", "DiscountAmount": "", "DiscountDueDate": "",
   "LineItems": [{"LineNumber": "", "Quantity": "", "UOM": "", "UnitPrice": "", "BuyerPartNumber": "", "VendorPartNumber": "", "Description": ""}],
-  "InvoiceTotal": "", "DiscountableAmount": "",
+  "Subtotal": "", "InvoiceTotal": "", "DiscountableAmount": "",
   "LocalTaxCode": "", "LocalTaxAmount": "", "StateTaxCode": "", "StateTaxAmount": "",
   "FederalTaxCode": "", "FederalTaxAmount": "", "TaxExemptCode": "", "TaxExemptAmount": "",
   "FreightAmount": "", "FreightDescription": "", "MiscChargeCode": "", "MiscChargeAmount": "", "MiscChargeDescription": "",
@@ -36,17 +41,38 @@ Extract the following fields:
 }`;
 
 /**
- * Process a PDF image through Claude Vision API as fallback OCR.
- * Converts PDF page to base64 image first.
+ * Process a PDF through Claude API as fallback OCR.
+ * Uses the document content block type for native PDF support.
  */
 export async function extractWithClaude(
   pdfBase64: string,
   apiKey: string,
-  mediaType: string = 'image/png'
+  mediaType: string = 'application/pdf',
+  extractionTemplate?: string
 ): Promise<ClaudeOCRResult> {
   const startTime = Date.now();
 
   try {
+    // Determine if this is a PDF or image and use the correct content block type
+    const isPdf = mediaType === 'application/pdf';
+    const contentBlock = isPdf
+      ? {
+          type: 'document' as const,
+          source: {
+            type: 'base64' as const,
+            media_type: mediaType,
+            data: pdfBase64,
+          },
+        }
+      : {
+          type: 'image' as const,
+          source: {
+            type: 'base64' as const,
+            media_type: mediaType,
+            data: pdfBase64,
+          },
+        };
+
     const response = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: {
@@ -61,17 +87,12 @@ export async function extractWithClaude(
           {
             role: 'user',
             content: [
-              {
-                type: 'image',
-                source: {
-                  type: 'base64',
-                  media_type: mediaType,
-                  data: pdfBase64,
-                },
-              },
+              contentBlock,
               {
                 type: 'text',
-                text: CLAUDE_EXTRACTION_PROMPT,
+                text: extractionTemplate
+                  ? `${CLAUDE_EXTRACTION_PROMPT}\n\nSUPPLIER-SPECIFIC EXTRACTION GUIDE:\n${extractionTemplate}`
+                  : CLAUDE_EXTRACTION_PROMPT,
               },
             ],
           },

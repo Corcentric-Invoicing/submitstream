@@ -3,7 +3,7 @@
 // Determines if extraction quality is sufficient
 // ============================================
 
-import type { ConfidenceLevel } from '../../../../shared/src/types/invoice';
+import type { ConfidenceLevel } from '../../shared/src/types/invoice';
 
 export interface ConfidenceResult {
   score: number;           // 0-100

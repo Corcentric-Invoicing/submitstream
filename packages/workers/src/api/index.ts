@@ -1,364 +1,301 @@
 // ============================================
-// API Worker
-// HTTP endpoints for the portal frontend
+// API Worker — Request Router
+// Maps incoming HTTP requests to handler functions.
+// Each handler lives in its own module under handlers/.
 // ============================================
 
-import { createClient, SupabaseClient } from '@supabase/supabase-js';
-import { processInvoicePDF } from '../ocr-pipeline';
+import { APIWorkerEnv, RequestContext } from './types';
+import { buildResponseHeaders } from './middleware/cors';
+import { getUserClient, getServiceClient } from './middleware/auth';
+import { setResponseHeaders, errorResponse, jsonResponse } from './middleware/response';
 
-export interface APIWorkerEnv {
-  INVOICE_PDFS: R2Bucket;
-  SUPABASE_URL: string;
-  SUPABASE_SERVICE_ROLE_KEY: string;
-  SUPABASE_ANON_KEY: string;
-  MISTRAL_API_KEY: string;
-  ANTHROPIC_API_KEY: string;
-}
-
-// CORS headers for portal frontend
-const corsHeaders = {
-  'Access-Control-Allow-Origin': '*', // TODO: restrict to portal domain
-  'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type, Authorization',
-};
-
-function jsonResponse(data: unknown, status = 200): Response {
-  return new Response(JSON.stringify(data), {
-    status,
-    headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-  });
-}
-
-function errorResponse(message: string, status = 400): Response {
-  return jsonResponse({ error: message }, status);
-}
+// ── Handler imports ──
+import { listInvoices, getInvoice, patchInvoice } from './handlers/invoices';
+import { uploadInvoice } from './handlers/upload';
+import { getInvoicePdf } from './handlers/pdf';
+import { exportInvoiceCsv } from './handlers/csv-export';
+import { listSuppliers, createSupplier, patchSupplier, deactivateSupplier, reactivateSupplier, deleteSupplier, getSupplierUsers, removeSupplierUser, testSupplierConnection } from './handlers/suppliers';
+import { getSettings, patchSettings } from './handlers/settings';
+import { inviteTeamMember, listTeamMembers, assignSupplier, unassignSupplier, updateTeamMember, resetTeamMemberPassword, deactivateTeamMember, reactivateTeamMember, deleteTeamMember } from './handlers/team';
+import { getStats, getUsage, healthCheck } from './handlers/stats';
+import { previewCorcentricXml } from './handlers/corcentric-xml';
+import { submitToCorcentricHandler, retryCorcentricSubmission, listCorcentricSubmissions } from './handlers/corcentric-submit';
+import { listCustomersHandler, getCustomerHandler, createCustomerHandler, patchCustomerHandler, listCustomerCodesHandler, addCustomerCodeHandler, removeCustomerCodeHandler, listShipTosHandler, addShipToHandler, patchShipToHandler, removeShipToHandler } from './handlers/customers';
+import { listCommunitiesHandler, getCommunitiesHandler, createCommunityHandler, updateCommunityHandler, deleteCommunityHandler } from './handlers/communities';
+import { pullOneSupplierHandler, pullAllSuppliersHandler, testConnectionHandler as psTestConnectionHandler, listPullsHandler, healthSummaryHandler } from './handlers/promostandards';
+import { getCustomerCandidatesHandler } from './handlers/customer-match';
 
 /**
- * Create a Supabase client from the request's Authorization header.
- * Uses the user's JWT for RLS enforcement.
+ * Main Cloudflare Worker fetch handler.
+ * Routes incoming requests to appropriate handler functions based on method and path.
+ * Builds shared RequestContext with pre-configured database clients and headers before delegating.
+ *
+ * @param request - Incoming HTTP request
+ * @param env - Cloudflare Worker environment (R2 buckets, secrets, KV, etc.)
+ * @returns HTTP response from the matched handler, or 404 if no route matches
  */
-function getSupabaseClient(env: APIWorkerEnv, authHeader: string | null): SupabaseClient {
-  if (authHeader?.startsWith('Bearer ')) {
-    const token = authHeader.slice(7);
-    return createClient(env.SUPABASE_URL, env.SUPABASE_ANON_KEY, {
-      global: { headers: { Authorization: `Bearer ${token}` } },
-    });
-  }
-  // Fallback to anon key (limited by RLS)
-  return createClient(env.SUPABASE_URL, env.SUPABASE_ANON_KEY);
-}
-
-/**
- * Service-level Supabase client (bypasses RLS).
- * Used for operations triggered by Workers, not user requests.
- */
-function getServiceClient(env: APIWorkerEnv): SupabaseClient {
-  return createClient(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY);
-}
-
 export default {
   async fetch(request: Request, env: APIWorkerEnv): Promise<Response> {
+    // Build CORS + security headers for this request
+    const headers = buildResponseHeaders(request, env);
+    setResponseHeaders(headers);
+
     // Handle CORS preflight
     if (request.method === 'OPTIONS') {
-      return new Response(null, { headers: corsHeaders });
+      return new Response(null, { headers });
     }
 
     const url = new URL(request.url);
     const path = url.pathname;
     const authHeader = request.headers.get('Authorization');
 
+    // Read supplier context cookie (set when serving /supplier/{code} pages)
+    const cookieHeader = request.headers.get('Cookie') || '';
+    const supplierCtxMatch = cookieHeader.match(/(?:^|;\s*)__supplier_ctx=([^;]+)/);
+    const supplierContextCode = supplierCtxMatch
+      ? decodeURIComponent(supplierCtxMatch[1]).toLowerCase()
+      : undefined;
+
+    // Build request context (shared by all handlers)
+    const ctx: RequestContext = {
+      env,
+      url,
+      path,
+      authHeader,
+      headers,
+      userClient: getUserClient(env, authHeader),
+      serviceClient: getServiceClient(env),
+      supplierContextCode,
+    };
+
     try {
-      // ============================================
-      // INVOICE ENDPOINTS
-      // ============================================
+      // ── Invoices ──
+      if (path === '/api/invoices' && request.method === 'GET')
+        return listInvoices(request, ctx);
 
-      // GET /api/invoices - List invoices (filtered by RLS)
-      if (path === '/api/invoices' && request.method === 'GET') {
-        const supabase = getSupabaseClient(env, authHeader);
-        const status = url.searchParams.get('status');
-        const supplierId = url.searchParams.get('supplier_id');
-        const limit = parseInt(url.searchParams.get('limit') || '50');
-        const offset = parseInt(url.searchParams.get('offset') || '0');
+      if (path.match(/^\/api\/invoices\/[\w-]+$/) && request.method === 'GET')
+        return getInvoice(request, ctx);
 
-        let query = supabase
-          .from('invoices')
-          .select('*, supplier:suppliers(name, code)', { count: 'exact' })
-          .order('created_at', { ascending: false })
-          .range(offset, offset + limit - 1);
+      if (path.match(/^\/api\/invoices\/[\w-]+$/) && request.method === 'PATCH')
+        return patchInvoice(request, ctx);
 
-        if (status) query = query.eq('status', status);
-        if (supplierId) query = query.eq('supplier_id', supplierId);
+      // ── Upload ──
+      if ((path === '/api/upload' || path === '/api/invoices/upload') && request.method === 'POST')
+        return uploadInvoice(request, ctx);
 
-        const { data, error, count } = await query;
-        if (error) return errorResponse(error.message, 500);
-        return jsonResponse({ invoices: data, total: count });
-      }
+      // ── PDF viewer ──
+      if (path.match(/^\/api\/invoices\/[\w-]+\/pdf$/) && request.method === 'GET')
+        return getInvoicePdf(request, ctx);
 
-      // GET /api/invoices/:id - Get single invoice
-      if (path.match(/^\/api\/invoices\/[\w-]+$/) && request.method === 'GET') {
-        const id = path.split('/').pop();
-        const supabase = getSupabaseClient(env, authHeader);
+      // ── CSV export ──
+      if (path.match(/^\/api\/invoices\/[\w-]+\/csv$/) && request.method === 'GET')
+        return exportInvoiceCsv(request, ctx);
 
-        const { data, error } = await supabase
-          .from('invoices')
-          .select('*, supplier:suppliers(name, code)')
-          .eq('id', id)
+      // ── Customer-match candidates (review UI banner) ──
+      if (path.match(/^\/api\/invoices\/[\w-]+\/customer-candidates$/) && request.method === 'GET')
+        return getCustomerCandidatesHandler(request, ctx);
+
+      // ── Corcentric XML preview (dry-run) ──
+      if (path.match(/^\/api\/invoices\/[\w-]+\/corcentric-xml$/) && request.method === 'GET')
+        return previewCorcentricXml(request, ctx);
+
+      // ── Corcentric submit (live or dry-run) ──
+      if (path.match(/^\/api\/invoices\/[\w-]+\/corcentric-submit$/) && request.method === 'POST')
+        return submitToCorcentricHandler(request, ctx);
+
+      // ── Corcentric retry ──
+      if (path.match(/^\/api\/invoices\/[\w-]+\/corcentric-retry$/) && request.method === 'POST')
+        return retryCorcentricSubmission(request, ctx);
+
+      // ── Corcentric submission history ──
+      if (path === '/api/corcentric-submissions' && request.method === 'GET')
+        return listCorcentricSubmissions(request, ctx);
+
+      // ── Suppliers ──
+      if (path === '/api/suppliers' && request.method === 'GET')
+        return listSuppliers(request, ctx);
+
+      if (path === '/api/suppliers' && request.method === 'POST')
+        return createSupplier(request, ctx);
+
+      if (path.match(/^\/api\/suppliers\/[\w-]+\/deactivate$/) && request.method === 'POST')
+        return deactivateSupplier(request, ctx);
+
+      if (path.match(/^\/api\/suppliers\/[\w-]+\/reactivate$/) && request.method === 'POST')
+        return reactivateSupplier(request, ctx);
+
+      if (path.match(/^\/api\/suppliers\/[\w-]+$/) && request.method === 'DELETE')
+        return deleteSupplier(request, ctx);
+
+      if (path.match(/^\/api\/suppliers\/[\w-]+\/users$/) && request.method === 'GET')
+        return getSupplierUsers(request, ctx);
+
+      if (path.match(/^\/api\/suppliers\/[\w-]+\/users$/) && request.method === 'DELETE')
+        return removeSupplierUser(request, ctx);
+
+      // ── Supplier Corcentric connection test ──
+      if (path.match(/^\/api\/suppliers\/[\w-]+\/test-connection$/) && request.method === 'POST')
+        return testSupplierConnection(request, ctx);
+
+      if (path.startsWith('/api/suppliers/') && request.method === 'PATCH')
+        return patchSupplier(request, ctx);
+
+      // ── Stats ──
+      if (path === '/api/stats' && request.method === 'GET')
+        return getStats(request, ctx);
+
+      // ── Settings (admin only) ──
+      if (path === '/api/settings' && request.method === 'GET')
+        return getSettings(request, ctx);
+
+      if (path === '/api/settings' && request.method === 'PATCH')
+        return patchSettings(request, ctx);
+
+      // ── Usage ──
+      if (path === '/api/usage' && request.method === 'GET')
+        return getUsage(request, ctx);
+
+      // ── Team (admin only) ──
+      if (path === '/api/team/invite' && request.method === 'POST')
+        return inviteTeamMember(request, ctx);
+
+      if (path === '/api/team' && request.method === 'GET')
+        return listTeamMembers(request, ctx);
+
+      if (path === '/api/team/assign' && request.method === 'POST')
+        return assignSupplier(request, ctx);
+
+      if (path === '/api/team/assign' && request.method === 'DELETE')
+        return unassignSupplier(request, ctx);
+
+      if (path.match(/^\/api\/team\/[\w-]+\/reset-password$/) && request.method === 'POST')
+        return resetTeamMemberPassword(request, ctx);
+
+      if (path.match(/^\/api\/team\/[\w-]+\/deactivate$/) && request.method === 'POST')
+        return deactivateTeamMember(request, ctx);
+
+      if (path.match(/^\/api\/team\/[\w-]+\/reactivate$/) && request.method === 'POST')
+        return reactivateTeamMember(request, ctx);
+
+      if (path.match(/^\/api\/team\/[\w-]+$/) && request.method === 'DELETE')
+        return deleteTeamMember(request, ctx);
+
+      if (path.match(/^\/api\/team\/[\w-]+$/) && request.method === 'PATCH')
+        return updateTeamMember(request, ctx);
+
+      // ── Me (authenticated role check for post-login redirect) ──
+      if (path === '/api/me' && request.method === 'GET') {
+        const { data: { user } } = await ctx.userClient.auth.getUser();
+        if (!user) return errorResponse('Not authenticated', 401);
+        const { data: profile, error: profileError } = await ctx.serviceClient
+          .from('user_profiles')
+          .select('role, supplier_id, display_name, terms_accepted_at, terms_version')
+          .eq('id', user.id)
           .single();
-
-        if (error) return errorResponse(error.message, 404);
-        return jsonResponse(data);
-      }
-
-      // PATCH /api/invoices/:id - Update invoice (team only: status, feedback)
-      if (path.match(/^\/api\/invoices\/[\w-]+$/) && request.method === 'PATCH') {
-        const id = path.split('/').pop();
-        const supabase = getSupabaseClient(env, authHeader);
-        const body = await request.json() as Record<string, unknown>;
-
-        // Allowed update fields
-        const allowedFields = ['status', 'feedback', 'needs_supplier_review', 'invoice_data'];
-        const updateData: Record<string, unknown> = {};
-        for (const field of allowedFields) {
-          if (body[field] !== undefined) {
-            updateData[field] = body[field];
-          }
+        if (profileError || !profile) {
+          return errorResponse('Profile not found — retry', 503);
         }
-
-        // If rejecting, set feedback metadata
-        if (updateData.status === 'rejected') {
-          updateData.needs_supplier_review = true;
-          updateData.feedback_date = new Date().toISOString();
-        }
-
-        const { data, error } = await supabase
-          .from('invoices')
-          .update(updateData)
-          .eq('id', id)
-          .select()
-          .single();
-
-        if (error) return errorResponse(error.message, 500);
-
-        // Log the status change
-        if (updateData.status) {
-          const serviceClient = getServiceClient(env);
-          await serviceClient.from('feedback_history').insert({
-            invoice_id: id,
-            action: updateData.status as string,
-            feedback_text: updateData.feedback as string || null,
-          });
-        }
-
-        return jsonResponse(data);
-      }
-
-      // ============================================
-      // UPLOAD ENDPOINT (manual fallback)
-      // ============================================
-
-      // POST /api/upload - Upload PDF for OCR processing
-      if (path === '/api/upload' && request.method === 'POST') {
-        const formData = await request.formData();
-        const file = formData.get('file') as File;
-        const supplierId = formData.get('supplier_id') as string;
-
-        if (!file || !supplierId) {
-          return errorResponse('Missing file or supplier_id');
-        }
-
-        const serviceClient = getServiceClient(env);
-
-        // Store in R2
-        const pdfBytes = await file.arrayBuffer();
-        const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-        const r2Key = `invoices/upload/${timestamp}_${file.name}`;
-
-        await env.INVOICE_PDFS.put(r2Key, pdfBytes, {
-          customMetadata: {
-            source: 'upload',
-            original_filename: file.name,
-            uploaded_at: new Date().toISOString(),
-          },
+        return jsonResponse({
+          id: user.id,
+          role: profile.role,
+          supplier_id: profile.supplier_id || null,
+          display_name: profile.display_name || null,
+          terms_accepted_at: profile.terms_accepted_at || null,
+          terms_version: profile.terms_version || null,
         });
+      }
 
-        // Create invoice record
-        const { data: invoice, error: insertError } = await serviceClient
-          .from('invoices')
-          .insert({
-            supplier_id: supplierId,
-            file_name: file.name,
-            r2_object_key: r2Key,
-            status: 'processing',
-            source: 'upload',
-            invoice_data: {},
-          })
-          .select()
-          .single();
-
-        if (insertError) return errorResponse(insertError.message, 500);
-
-        // Run OCR pipeline
-        const ocrResult = await processInvoicePDF(pdfBytes, {
-          MISTRAL_API_KEY: env.MISTRAL_API_KEY,
-          ANTHROPIC_API_KEY: env.ANTHROPIC_API_KEY,
-        });
-
-        // Update invoice with results
-        await serviceClient
-          .from('invoices')
+      // ── Accept Terms of Service ──
+      if (path === '/api/me/accept-terms' && request.method === 'POST') {
+        const { data: { user } } = await ctx.userClient.auth.getUser();
+        if (!user) return errorResponse('Not authenticated', 401);
+        const { error: updateError } = await ctx.serviceClient
+          .from('user_profiles')
           .update({
-            status: ocrResult.status,
-            confidence: ocrResult.confidence,
-            ocr_provider: ocrResult.provider,
-            invoice_data: ocrResult.data,
-            ocr_raw_response: ocrResult.rawResponses,
+            terms_accepted_at: new Date().toISOString(),
+            terms_version: '1.0',
           })
-          .eq('id', invoice.id);
-
-        return jsonResponse({
-          invoice_id: invoice.id,
-          status: ocrResult.status,
-          confidence: ocrResult.confidence,
-          provider: ocrResult.provider,
-          issues: ocrResult.issues,
-        });
+          .eq('id', user.id);
+        if (updateError) return errorResponse('Failed to record acceptance', 500);
+        return jsonResponse({ accepted: true, terms_version: '1.0', accepted_at: new Date().toISOString() });
       }
 
-      // ============================================
-      // PDF VIEWER ENDPOINT
-      // ============================================
+      // ── Customers (admin only) ──
+      if (path === '/api/customers' && request.method === 'GET')
+        return listCustomersHandler(request, ctx);
 
-      // GET /api/invoices/:id/pdf - Get signed URL for PDF
-      if (path.match(/^\/api\/invoices\/[\w-]+\/pdf$/) && request.method === 'GET') {
-        const id = path.split('/')[3];
-        const supabase = getSupabaseClient(env, authHeader);
+      if (path === '/api/customers' && request.method === 'POST')
+        return createCustomerHandler(request, ctx);
 
-        const { data: invoice, error } = await supabase
-          .from('invoices')
-          .select('r2_object_key')
-          .eq('id', id)
-          .single();
+      if (path.match(/^\/api\/customers\/[\w-]+\/codes\/[\w-]+$/) && request.method === 'DELETE')
+        return removeCustomerCodeHandler(request, ctx);
 
-        if (error || !invoice) return errorResponse('Invoice not found', 404);
+      if (path.match(/^\/api\/customers\/[\w-]+\/codes$/) && request.method === 'GET')
+        return listCustomerCodesHandler(request, ctx);
 
-        // Get PDF from R2
-        const object = await env.INVOICE_PDFS.get(invoice.r2_object_key);
-        if (!object) return errorResponse('PDF not found in storage', 404);
+      if (path.match(/^\/api\/customers\/[\w-]+\/codes$/) && request.method === 'POST')
+        return addCustomerCodeHandler(request, ctx);
 
-        return new Response(object.body, {
-          headers: {
-            ...corsHeaders,
-            'Content-Type': 'application/pdf',
-            'Content-Disposition': `inline; filename="invoice.pdf"`,
-          },
-        });
-      }
+      if (path.match(/^\/api\/customers\/[\w-]+$/) && request.method === 'GET')
+        return getCustomerHandler(request, ctx);
 
-      // ============================================
-      // SUPPLIER ENDPOINTS
-      // ============================================
+      if (path.match(/^\/api\/customers\/[\w-]+$/) && request.method === 'PATCH')
+        return patchCustomerHandler(request, ctx);
 
-      // GET /api/suppliers - List suppliers (team only via RLS)
-      if (path === '/api/suppliers' && request.method === 'GET') {
-        const supabase = getSupabaseClient(env, authHeader);
-        const { data, error } = await supabase
-          .from('suppliers')
-          .select('*')
-          .order('name');
+      // ── Customer Ship-To Locations ──
+      if (path.match(/^\/api\/customers\/[\w-]+\/ship-tos\/[\w-]+$/) && request.method === 'PATCH')
+        return patchShipToHandler(request, ctx);
 
-        if (error) return errorResponse(error.message, 500);
-        return jsonResponse(data);
-      }
+      if (path.match(/^\/api\/customers\/[\w-]+\/ship-tos\/[\w-]+$/) && request.method === 'DELETE')
+        return removeShipToHandler(request, ctx);
 
-      // POST /api/suppliers - Create supplier (team only)
-      if (path === '/api/suppliers' && request.method === 'POST') {
-        const supabase = getSupabaseClient(env, authHeader);
-        const body = await request.json() as Record<string, unknown>;
+      if (path.match(/^\/api\/customers\/[\w-]+\/ship-tos$/) && request.method === 'GET')
+        return listShipTosHandler(request, ctx);
 
-        const { data, error } = await supabase
-          .from('suppliers')
-          .insert({
-            name: body.name,
-            code: body.code,
-            email_prefix: body.email_prefix,
-            contact_email: body.contact_email || null,
-            contact_name: body.contact_name || null,
-          })
-          .select()
-          .single();
+      if (path.match(/^\/api\/customers\/[\w-]+\/ship-tos$/) && request.method === 'POST')
+        return addShipToHandler(request, ctx);
 
-        if (error) return errorResponse(error.message, 500);
-        return jsonResponse(data, 201);
-      }
+      // ── PromoStandards pull (admin only) ──
+      if (path.match(/^\/api\/promostandards\/pull\/[\w-]+$/) && request.method === 'POST')
+        return pullOneSupplierHandler(request, ctx);
 
-      // ============================================
-      // DASHBOARD STATS
-      // ============================================
+      if (path === '/api/promostandards/pull-all' && request.method === 'POST')
+        return pullAllSuppliersHandler(request, ctx);
 
-      // GET /api/stats - Dashboard summary (team only via RLS)
-      if (path === '/api/stats' && request.method === 'GET') {
-        const supabase = getSupabaseClient(env, authHeader);
+      if (path === '/api/promostandards/test-connection' && request.method === 'POST')
+        return psTestConnectionHandler(request, ctx);
 
-        const [processed, pending, rejected, total] = await Promise.all([
-          supabase.from('invoices').select('id', { count: 'exact', head: true }).eq('status', 'processed'),
-          supabase.from('invoices').select('id', { count: 'exact', head: true }).eq('status', 'pending'),
-          supabase.from('invoices').select('id', { count: 'exact', head: true }).eq('status', 'rejected'),
-          supabase.from('invoices').select('id', { count: 'exact', head: true }),
-        ]);
+      if (path === '/api/promostandards/pulls' && request.method === 'GET')
+        return listPullsHandler(request, ctx);
 
-        return jsonResponse({
-          processed: processed.count || 0,
-          pending: pending.count || 0,
-          rejected: rejected.count || 0,
-          total: total.count || 0,
-        });
-      }
+      if (path === '/api/promostandards/health' && request.method === 'GET')
+        return healthSummaryHandler(request, ctx);
 
-      // ============================================
-      // CSV EXPORT
-      // ============================================
+      // ── Communities (admin only) ──
+      if (path === '/api/communities' && request.method === 'GET')
+        return listCommunitiesHandler(request, ctx);
 
-      // GET /api/invoices/:id/csv - Export invoice as EDI CSV
-      if (path.match(/^\/api\/invoices\/[\w-]+\/csv$/) && request.method === 'GET') {
-        const id = path.split('/')[3];
-        const supabase = getSupabaseClient(env, authHeader);
+      if (path === '/api/communities' && request.method === 'POST')
+        return createCommunityHandler(request, ctx);
 
-        const { data: invoice, error } = await supabase
-          .from('invoices')
-          .select('*')
-          .eq('id', id)
-          .single();
+      if (path.match(/^\/api\/communities\/[\w-]+$/) && request.method === 'GET')
+        return getCommunitiesHandler(request, ctx);
 
-        if (error || !invoice) return errorResponse('Invoice not found', 404);
+      if (path.match(/^\/api\/communities\/[\w-]+$/) && request.method === 'PATCH')
+        return updateCommunityHandler(request, ctx);
 
-        // Generate CSV (import dynamically to keep bundle small)
-        const { generateEDICSV } = await import('../../../../shared/src/utils/csv-export');
-        const csv = generateEDICSV(invoice.invoice_data);
+      if (path.match(/^\/api\/communities\/[\w-]+$/) && request.method === 'DELETE')
+        return deleteCommunityHandler(request, ctx);
 
-        return new Response(csv, {
-          headers: {
-            ...corsHeaders,
-            'Content-Type': 'text/csv',
-            'Content-Disposition': `attachment; filename="invoice_${invoice.file_name.replace('.pdf', '')}.csv"`,
-          },
-        });
-      }
-
-      // ============================================
-      // HEALTH CHECK
-      // ============================================
-      if (path === '/api/health') {
-        return jsonResponse({ status: 'ok', timestamp: new Date().toISOString() });
-      }
+      // ── Health ──
+      if (path === '/api/health')
+        return healthCheck();
 
       return errorResponse('Not found', 404);
 
     } catch (error) {
       console.error('[API] Unhandled error:', error);
-      return errorResponse(
-        `Internal server error: ${error instanceof Error ? error.message : 'Unknown error'}`,
-        500
-      );
+      return errorResponse('Internal server error', 500);
     }
   },
 };

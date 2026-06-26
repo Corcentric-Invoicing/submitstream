@@ -1,0 +1,92 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/"
+                  xmlns:ns="http://www.promostandards.org/WSDL/Invoice/1.0.0/"
+                  xmlns:shar="http://www.promostandards.org/WSDL/Invoice/1.0.0/SharedObjects/">
+  <soapenv:Body>
+    <ns:GetInvoicesResponse>
+      <ns:InvoiceArray>
+        <ns:Invoice>
+          <shar:invoiceNumber>MG-2026-1042</shar:invoiceNumber>
+          <shar:invoiceType>INVOICE</shar:invoiceType>
+          <shar:invoiceDate>2026-04-10</shar:invoiceDate>
+          <shar:purchaseOrderNumber>PO-88211</shar:purchaseOrderNumber>
+          <ns:BillTo>
+            <shar:AccountInfo>
+              <shar:accountName>Acme Distributing</shar:accountName>
+              <shar:accountNumber>AD-0099</shar:accountNumber>
+              <shar:attentionTo>Jane Buyer</shar:attentionTo>
+              <shar:Address1>500 Market St</shar:Address1>
+              <shar:Address2>Suite 300</shar:Address2>
+              <shar:city>Philadelphia</shar:city>
+              <shar:region>PA</shar:region>
+              <shar:postalCode>19106</shar:postalCode>
+              <shar:country>US</shar:country>
+              <shar:email>ap@acme.example</shar:email>
+              <shar:phone>215-555-0100</shar:phone>
+            </shar:AccountInfo>
+          </ns:BillTo>
+          <ns:SoldTo>
+            <shar:AccountInfo>
+              <shar:accountName>Acme Distributing</shar:accountName>
+              <shar:Address1>500 Market St</shar:Address1>
+              <shar:city>Philadelphia</shar:city>
+              <shar:region>PA</shar:region>
+              <shar:postalCode>19106</shar:postalCode>
+              <shar:country>US</shar:country>
+            </shar:AccountInfo>
+          </ns:SoldTo>
+          <shar:paymentTerms>Net 30</shar:paymentTerms>
+          <shar:paymentDueDate>2026-05-10</shar:paymentDueDate>
+          <shar:currency>USD</shar:currency>
+          <shar:fob>Origin</shar:fob>
+          <shar:salesAmount>1250.00</shar:salesAmount>
+          <shar:shippingAmount>45.00</shar:shippingAmount>
+          <shar:handlingAmount>15.00</shar:handlingAmount>
+          <shar:taxAmount>87.50</shar:taxAmount>
+          <shar:invoiceAmount>1397.50</shar:invoiceAmount>
+          <shar:advancePaymentAmount>0.00</shar:advancePaymentAmount>
+          <shar:invoiceAmountDue>1397.50</shar:invoiceAmountDue>
+          <ns:InvoiceLineItemsArray>
+            <shar:InvoiceLineItem>
+              <shar:invoiceLineItemNumber>1</shar:invoiceLineItemNumber>
+              <shar:productId>MUG-BLK-11</shar:productId>
+              <shar:partId>MUG-BLK-11-STD</shar:partId>
+              <shar:purchaseOrderLineItemNumber>1</shar:purchaseOrderLineItemNumber>
+              <shar:orderedQuantity>100</shar:orderedQuantity>
+              <shar:invoiceQuantity>100</shar:invoiceQuantity>
+              <shar:quantityUOM>EA</shar:quantityUOM>
+              <shar:lineItemDescription>11oz Ceramic Mug, Black, 1-color imprint</shar:lineItemDescription>
+              <shar:unitPrice>12.50</shar:unitPrice>
+              <shar:extendedPrice>1250.00</shar:extendedPrice>
+              <shar:distributorPartId>ACM-8821</shar:distributorPartId>
+            </shar:InvoiceLineItem>
+            <shar:InvoiceLineItem>
+              <shar:invoiceLineItemNumber>2</shar:invoiceLineItemNumber>
+              <shar:chargeId>SETUP</shar:chargeId>
+              <shar:invoiceQuantity>1</shar:invoiceQuantity>
+              <shar:quantityUOM>EA</shar:quantityUOM>
+              <shar:lineItemDescription>One-time setup fee</shar:lineItemDescription>
+              <shar:unitPrice>50.00</shar:unitPrice>
+              <shar:extendedPrice>50.00</shar:extendedPrice>
+            </shar:InvoiceLineItem>
+          </ns:InvoiceLineItemsArray>
+          <ns:SalesOrderNumbersArray>
+            <shar:salesOrderNumber>SO-77321</shar:salesOrderNumber>
+          </ns:SalesOrderNumbersArray>
+          <ns:TaxArray>
+            <shar:tax>
+              <shar:taxType>SALES</shar:taxType>
+              <shar:taxJurisdiction>PA</shar:taxJurisdiction>
+              <shar:taxAmount>75.00</shar:taxAmount>
+            </shar:tax>
+            <shar:tax>
+              <shar:taxType>SALES</shar:taxType>
+              <shar:taxJurisdiction>Philadelphia City</shar:taxJurisdiction>
+              <shar:taxAmount>12.50</shar:taxAmount>
+            </shar:tax>
+          </ns:TaxArray>
+        </ns:Invoice>
+      </ns:InvoiceArray>
+    </ns:GetInvoicesResponse>
+  </soapenv:Body>
+</soapenv:Envelope>

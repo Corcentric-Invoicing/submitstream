@@ -6,7 +6,7 @@
 import { extractWithMistral } from './mistral';
 import { extractWithClaude } from './claude';
 import { calculateConfidence, normalizeDates } from './confidence';
-import type { InvoiceStatus, ConfidenceLevel, OCRProvider } from '../../../../shared/src/types/invoice';
+import type { InvoiceStatus, ConfidenceLevel, OCRProvider } from '../../shared/src/types/invoice';
 
 export interface OCRPipelineResult {
   success: boolean;
@@ -29,6 +29,10 @@ export interface OCRPipelineEnv {
   ANTHROPIC_API_KEY: string;
 }
 
+export interface OCRPipelineOptions {
+  extractionTemplate?: string;  // Supplier-specific extraction hints
+}
+
 /**
  * Main OCR pipeline: Mistral primary with Claude fallback.
  *
@@ -42,14 +46,15 @@ export interface OCRPipelineEnv {
  */
 export async function processInvoicePDF(
   pdfBytes: ArrayBuffer,
-  env: OCRPipelineEnv
+  env: OCRPipelineEnv,
+  options?: OCRPipelineOptions
 ): Promise<OCRPipelineResult> {
   const startTime = Date.now();
   const rawResponses: { mistral?: unknown; claude?: unknown } = {};
 
   // Step 1: Try Mistral OCR
   console.log('[OCR] Starting Mistral extraction...');
-  const mistralResult = await extractWithMistral(pdfBytes, env.MISTRAL_API_KEY);
+  const mistralResult = await extractWithMistral(pdfBytes, env.MISTRAL_API_KEY, options?.extractionTemplate);
   rawResponses.mistral = mistralResult.rawResponse;
 
   if (mistralResult.success && mistralResult.data) {
@@ -106,7 +111,7 @@ export async function processInvoicePDF(
     const pdfBase64 = btoa(binary);
 
     console.log('[OCR] Starting Claude fallback extraction...');
-    const claudeResult = await extractWithClaude(pdfBase64, env.ANTHROPIC_API_KEY, 'application/pdf');
+    const claudeResult = await extractWithClaude(pdfBase64, env.ANTHROPIC_API_KEY, 'application/pdf', options?.extractionTemplate);
     rawResponses.claude = claudeResult.rawResponse;
 
     if (claudeResult.success && claudeResult.data) {
