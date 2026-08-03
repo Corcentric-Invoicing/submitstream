@@ -450,8 +450,10 @@ function SupplierFormModal({
     if (e) e.preventDefault();
     setErr(null);
     if (!name.trim() || !code.trim() || !emailPrefix.trim()) {
-      setErr('Name, code, and email prefix are required.');
-      setTab('general');
+      setErr('Name, code, and email prefix are required (on the General tab).');
+      // Don't force-switch tabs — the footer error is visible on every tab,
+      // and yanking the user off their in-progress Extraction edit was
+      // jarring (looked like the modal had reset itself).
       return;
     }
     setSubmitting(true);
@@ -487,13 +489,24 @@ function SupplierFormModal({
     }
   }
 
+  // Escape-to-close — keeps a keyboard exit even though backdrop-click
+  // is intentionally disabled (see below).
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key === 'Escape') onClose();
+    }
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
   return (
     <div
       className="fixed inset-0 z-[60] flex items-center justify-center p-4"
       style={{ background: 'rgba(10,11,13,0.5)', backdropFilter: 'blur(3px)' }}
-      onClick={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
+      // NOTE: no backdrop click-to-close. The Extraction-tab textarea is
+      // resize-y, and dragging the corner past the modal edge would land
+      // a click on this backdrop and nuke the in-progress edit. Users close
+      // via the X button, Cancel, or Esc — explicit actions only.
     >
       <div className="bg-white rounded-card shadow-2 max-w-2xl w-full max-h-[90vh] flex flex-col overflow-hidden">
         {/* Header */}
@@ -1184,9 +1197,8 @@ function ConfirmModal({
     <div
       className="fixed inset-0 z-[60] flex items-center justify-center p-4"
       style={{ background: 'rgba(10,11,13,0.5)', backdropFilter: 'blur(3px)' }}
-      onClick={(e) => {
-        if (e.target === e.currentTarget) onCancel();
-      }}
+      // NOTE: no backdrop click-to-close. Confirm/cancel via explicit
+      // buttons — prevents accidental dismiss of a destructive action prompt.
     >
       <div className="bg-white rounded-card shadow-2 max-w-sm w-full p-5">
         <div className="flex items-start gap-3 mb-3">

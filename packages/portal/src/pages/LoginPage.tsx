@@ -232,7 +232,20 @@ export default function LoginPage() {
             </form>
           ) : (
             <form onSubmit={handleMagicLink} className="space-y-4">
-              <Field label="Email">
+              <Field
+                label="Email"
+                action={
+                  // Supplier who was set up with a password (via admin
+                  // Set-Password) needs a way to reset. Without this link
+                  // they'd be stuck resending magic links forever.
+                  <a
+                    href="/forgot-password"
+                    className="text-[12px] text-zinc-500 hover:text-ink"
+                  >
+                    Forgot password?
+                  </a>
+                }
+              >
                 <input
                   type="email"
                   value={email}

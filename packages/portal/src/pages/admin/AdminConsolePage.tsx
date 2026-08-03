@@ -116,11 +116,13 @@ export default function AdminConsolePage({ role, userId, userEmail }: PageProps)
       const subBody = await submissionsRes.json().catch(() => ({}));
       const submissionsList: RecentSubmission[] = (subBody?.submissions ?? []).slice(0, 10);
 
-      // This-month submissions count and success
+      // This-month submissions count and success.
+      // Table is corcentric_submissions (was dms_submissions in an earlier
+      // schema). The old name silently returned nothing.
       let submissionsThisMonth = 0;
       let successThisMonth = 0;
       const { data: monthSubs } = await supabase
-        .from('dms_submissions')
+        .from('corcentric_submissions')
         .select('cor_status_code, created_at')
         .gte('created_at', monthStart.toISOString());
       if (Array.isArray(monthSubs)) {

@@ -1107,9 +1107,8 @@ function CustomerFormModal({
     <div
       className="fixed inset-0 z-[60] flex items-center justify-center p-4"
       style={{ background: 'rgba(10,11,13,0.5)', backdropFilter: 'blur(3px)' }}
-      onClick={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
+      // NOTE: no backdrop click-to-close. A stray click outside the modal
+      // would nuke in-progress form input. Users close via X or Cancel.
     >
       <div className="bg-white rounded-card shadow-2 max-w-xl w-full max-h-[90vh] overflow-hidden flex flex-col">
         <div className="flex items-center justify-between px-5 py-3.5 border-b border-line">

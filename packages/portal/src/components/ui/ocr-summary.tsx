@@ -20,6 +20,12 @@ interface OcrSummaryProps {
   missing: number;
   /** OCR model identifier surfaced as a small mono badge. */
   model?: string;
+  /** Provider that ultimately extracted the data — drives badge color
+   *  so a Claude-fallback (= Mistral failed) is visually loud. */
+  provider?: "mistral" | "claude" | "manual" | null;
+  /** True when Claude was used because Mistral failed (vs both succeeded).
+   *  Triggers the warning-yellow "(fallback)" treatment. */
+  fallbackUsed?: boolean;
   /** Inference latency in ms; rendered as a small mono badge. */
   latencyMs?: number;
   className?: string;
@@ -30,6 +36,8 @@ export function OcrSummary({
   uncertain,
   missing,
   model,
+  provider,
+  fallbackUsed,
   latencyMs,
   className,
 }: OcrSummaryProps) {
@@ -58,8 +66,32 @@ export function OcrSummary({
         <div className="flex items-center gap-2 text-xs text-zinc-500">
           {model && <span>OCR by</span>}
           {model && (
-            <code className="bg-zinc-100 text-zinc-700 rounded px-1.5 py-0.5 font-mono text-[11px]">
-              {model}
+            <code
+              className={cn(
+                "rounded px-1.5 py-0.5 font-mono text-[11px]",
+                // Fallback path = Mistral failed, Claude rescued. Surface it loud
+                // so admins can spot Mistral health issues at a glance.
+                fallbackUsed
+                  ? "bg-warning/10 text-warning border border-warning/30"
+                  // Normal Mistral primary path = subtle gray
+                  : provider === "mistral"
+                  ? "bg-zinc-100 text-zinc-700"
+                  // Claude as primary (manual override etc.) = neutral but slightly tinted
+                  : provider === "claude"
+                  ? "bg-blue-50 text-blue-700 border border-blue-200"
+                  : "bg-zinc-100 text-zinc-700"
+              )}
+              title={
+                fallbackUsed
+                  ? "Claude was used because Mistral failed on this PDF"
+                  : provider === "mistral"
+                  ? "Primary OCR provider"
+                  : provider === "claude"
+                  ? "Claude (Anthropic) ran this extraction"
+                  : ""
+              }
+            >
+              {model}{fallbackUsed ? " (fallback)" : ""}
             </code>
           )}
           {latencyMs !== undefined && (

@@ -452,9 +452,8 @@ function ConfirmLowMatchModal({
     <div
       className="fixed inset-0 z-[60] flex items-center justify-center p-4"
       style={{ background: 'rgba(10,11,13,0.5)', backdropFilter: 'blur(3px)' }}
-      onClick={(e) => {
-        if (e.target === e.currentTarget) onCancel();
-      }}
+      // NOTE: no backdrop click-to-close. Confirm/cancel via explicit
+      // buttons — prevents an accidental dismiss of a match prompt.
     >
       <div className="bg-white rounded-card shadow-2 max-w-lg w-full overflow-hidden flex flex-col">
         <div className="flex items-center justify-between px-5 py-3.5 border-b border-line">
@@ -657,9 +656,8 @@ function CreateShipToModal({
     <div
       className="fixed inset-0 z-[60] flex items-center justify-center p-4"
       style={{ background: 'rgba(10,11,13,0.5)', backdropFilter: 'blur(3px)' }}
-      onClick={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
+      // NOTE: no backdrop click-to-close. Close via X or Cancel only —
+      // avoids losing the new ship-to form input to a stray click.
     >
       <div className="bg-white rounded-card shadow-2 max-w-lg w-full max-h-[90vh] overflow-hidden flex flex-col">
         <div className="flex items-center justify-between px-5 py-3.5 border-b border-line">

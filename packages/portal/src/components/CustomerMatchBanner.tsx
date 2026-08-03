@@ -66,6 +66,12 @@ export function CustomerMatchBanner({ invoiceId, supplierId, onResolved }: Custo
   const [statusMsg, setStatusMsg] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
   const [linkingId, setLinkingId] = useState<string | null>(null);
   const [showCreateModal, setShowCreateModal] = useState(false);
+  // Candidate held for low-confidence confirmation. Click → set this →
+  // modal renders → user clicks Confirm in modal → actual link happens.
+  // MUST be declared with the other useStates (above the `if (resolved)
+  // return null` guard) — declaring it below the early return violates
+  // the Rules of Hooks and surfaces as React #300 after resolution.
+  const [pendingConfirm, setPendingConfirm] = useState<Candidate | null>(null);
 
   // ── Fetch candidates on mount ──
   useEffect(() => {
@@ -129,7 +135,13 @@ export function CustomerMatchBanner({ invoiceId, supplierId, onResolved }: Custo
     return true;
   }
 
-  async function handleLink(c: Candidate) {
+  // Customer linkage drives DMS routing + billing — higher stakes than
+  // ship-to, so we use a stricter threshold here than ShipToMatchBanner's
+  // 0.70. Below this similarity, the reviewer must explicitly confirm in
+  // a modal showing the extracted BillTo next to the candidate.
+  const CONFIRM_THRESHOLD = 0.80;
+
+  async function performLink(c: Candidate) {
     setLinkingId(c.id);
     setStatusMsg(null);
     const ok = await patchInvoice(c.id, c.similarity);
@@ -145,6 +157,18 @@ export function CustomerMatchBanner({ invoiceId, supplierId, onResolved }: Custo
     } else {
       setLinkingId(null);
     }
+  }
+
+  function handleLink(c: Candidate) {
+    // Gate sub-threshold matches behind an explicit confirmation. Stops
+    // a stray click from attaching the invoice to a similarly-named
+    // (but different) customer — which would then send invoices to the
+    // wrong DMS customer code at submission time.
+    if (c.similarity < CONFIRM_THRESHOLD) {
+      setPendingConfirm(c);
+      return;
+    }
+    void performLink(c);
   }
 
   function handleCreate() {
@@ -244,6 +268,7 @@ export function CustomerMatchBanner({ invoiceId, supplierId, onResolved }: Custo
               <ul className="space-y-0">
                 {candidates.slice(0, 3).map((c) => {
                   const pct = Math.round(Number(c.similarity || 0) * 100);
+                  const isLowConfidence = c.similarity < CONFIRM_THRESHOLD;
                   return (
                     <li
                       key={c.id}
@@ -251,16 +276,29 @@ export function CustomerMatchBanner({ invoiceId, supplierId, onResolved }: Custo
                     >
                       <div className="flex-1 min-w-0">
                         <div className="font-semibold text-ink text-sm truncate">{c.name}</div>
-                        <div className="text-[11px] text-zinc-500 flex items-center gap-2 mt-0.5">
+                        <div className="text-[11px] text-zinc-500 flex items-center gap-2 mt-0.5 flex-wrap">
                           <span className="font-mono">{c.code}</span>
                           <span>·</span>
-                          <span className="font-num">{pct}% match</span>
+                          <span className={cn('font-num', isLowConfidence && 'text-warning font-semibold')}>
+                            {pct}% match
+                          </span>
                           <span className="flex-1 max-w-[60px] h-1 rounded-pill bg-warning/10 relative overflow-hidden">
                             <span
-                              className="absolute inset-y-0 left-0 bg-brand rounded-pill"
+                              className={cn(
+                                'absolute inset-y-0 left-0 rounded-pill',
+                                isLowConfidence ? 'bg-warning' : 'bg-brand'
+                              )}
                               style={{ width: `${Math.max(6, Math.min(100, pct))}%` }}
                             />
                           </span>
+                          {isLowConfidence && (
+                            <span
+                              className="text-[10px] uppercase tracking-[0.06em] font-semibold text-warning bg-warning/10 px-1.5 py-0.5 rounded"
+                              title={`Below ${Math.round(CONFIRM_THRESHOLD * 100)}% — link requires confirmation`}
+                            >
+                              needs confirm
+                            </span>
+                          )}
                         </div>
                       </div>
                       <Button
@@ -314,7 +352,116 @@ export function CustomerMatchBanner({ invoiceId, supplierId, onResolved }: Custo
           onCreated={handleCreateSubmitted}
         />
       )}
+
+      {/* Low-confidence customer-link confirmation. Stops a stray click
+          from binding the invoice to the wrong DMS customer. */}
+      {pendingConfirm && (
+        <ConfirmLowMatchCustomerModal
+          extracted={billTo}
+          candidate={pendingConfirm}
+          threshold={CONFIRM_THRESHOLD}
+          onCancel={() => setPendingConfirm(null)}
+          onConfirm={async () => {
+            const c = pendingConfirm;
+            setPendingConfirm(null);
+            await performLink(c);
+          }}
+        />
+      )}
     </>
+  );
+}
+
+// ──────────────────────────────────────────────────────────
+// Low-confidence customer-link confirmation modal
+// ──────────────────────────────────────────────────────────
+
+function ConfirmLowMatchCustomerModal({
+  extracted,
+  candidate,
+  threshold,
+  onCancel,
+  onConfirm,
+}: {
+  extracted: BillTo;
+  candidate: Candidate;
+  threshold: number;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  const pct = Math.round(candidate.similarity * 100);
+  const thresholdPct = Math.round(threshold * 100);
+  return (
+    <div
+      className="fixed inset-0 z-[60] flex items-center justify-center p-4"
+      style={{ background: 'rgba(10,11,13,0.5)', backdropFilter: 'blur(3px)' }}
+      // NOTE: no backdrop click-to-close. Confirm/cancel via explicit
+      // buttons — prevents an accidental dismiss of a match prompt.
+    >
+      <div className="bg-white rounded-card shadow-2 max-w-lg w-full overflow-hidden flex flex-col">
+        <div className="flex items-center justify-between px-5 py-3.5 border-b border-line">
+          <h3 className="text-base font-semibold text-ink flex items-center gap-2">
+            <AlertTriangle size={14} className="text-warning" aria-hidden />
+            Low-confidence customer match — please confirm
+          </h3>
+          <button
+            type="button"
+            onClick={onCancel}
+            className="text-zinc-500 hover:text-ink p-1 -m-1"
+            aria-label="Close"
+          >
+            <X size={16} />
+          </button>
+        </div>
+
+        <div className="px-5 py-4 space-y-3">
+          <p className="text-[13px] text-zinc-700">
+            This candidate matches the invoice's BillTo with only{' '}
+            <span className="font-semibold text-warning">{pct}% similarity</span> —
+            below the {thresholdPct}% threshold. Linking will permanently bind this
+            invoice to the customer below, which drives DMS routing and billing.
+            Only continue if you're sure they're the same company.
+          </p>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div className="bg-paper border border-line rounded-control p-3">
+              <div className="text-[10px] uppercase tracking-[0.06em] font-semibold text-zinc-500 mb-1">
+                From this invoice
+              </div>
+              <div className="text-[13px] text-ink font-medium">
+                {extracted.name || <span className="italic text-zinc-400">no name</span>}
+              </div>
+              <div className="text-[11px] text-zinc-700 mt-0.5">
+                {[extracted.address1, extracted.address2].filter(Boolean).join(' · ') || '—'}
+              </div>
+              <div className="text-[11px] text-zinc-500">
+                {[extracted.city, extracted.state, extracted.zip].filter(Boolean).join(', ') || '—'}
+              </div>
+            </div>
+            <div className="bg-warning-soft border border-warning/30 rounded-control p-3">
+              <div className="text-[10px] uppercase tracking-[0.06em] font-semibold text-warning mb-1">
+                Saved customer (will be used)
+              </div>
+              <div className="text-[13px] text-ink font-medium">
+                {candidate.name}
+              </div>
+              <div className="text-[11px] text-zinc-500 font-mono mt-0.5">
+                {candidate.code}
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div className="flex items-center justify-end gap-2 px-5 py-3 border-t border-line bg-paper">
+          <Button variant="secondary" size="sm" onClick={onCancel}>
+            Review
+          </Button>
+          <Button variant="primary" size="sm" onClick={onConfirm}>
+            Confirm link
+          </Button>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -490,9 +637,8 @@ function CreateCustomerModal({
     <div
       className="fixed inset-0 z-[60] flex items-center justify-center p-4"
       style={{ background: 'rgba(10,11,13,0.5)', backdropFilter: 'blur(3px)' }}
-      onClick={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
+      // NOTE: no backdrop click-to-close. Close via X or Cancel only —
+      // avoids losing the new customer form input to a stray click.
     >
       <div className="bg-white rounded-card shadow-2 max-w-lg w-full max-h-[90vh] overflow-y-auto">
         <div className="flex items-center justify-between px-5 py-3.5 border-b border-line">

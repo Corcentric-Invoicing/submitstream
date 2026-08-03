@@ -24,7 +24,17 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 PORTAL_DIR="$REPO_ROOT/packages/portal"
-WORKER_DIR="${WORKER_DIR:-$HOME/Downloads/ocr processing/worker-deploy}"
+# Worker lives in the monorepo now (packages/worker). Fall back to the
+# legacy $HOME/Downloads path if packages/worker doesn't exist yet — that
+# way anyone with the old layout still deploys, and $WORKER_DIR env var
+# always wins if set explicitly.
+if [[ -n "${WORKER_DIR:-}" ]]; then
+  : # honor user override
+elif [[ -d "$REPO_ROOT/packages/worker" ]]; then
+  WORKER_DIR="$REPO_ROOT/packages/worker"
+else
+  WORKER_DIR="$HOME/Downloads/ocr processing/worker-deploy"
+fi
 BUCKET="invoice-pdfs"
 PREFIX="portal"
 

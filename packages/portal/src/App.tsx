@@ -12,6 +12,7 @@ import { ErrorBoundary } from './components/ErrorBoundary';
 import LoginPage from './pages/LoginPage';
 import InvoicesPage from './pages/InvoicesPage';
 import TermsPage from './pages/TermsPage';
+import AuthConfirmPage from './pages/AuthConfirmPage';
 import SuppliersPage from './pages/admin/SuppliersPage';
 import TeamsPage from './pages/admin/TeamsPage';
 import PromoStandardsPage from './pages/admin/PromoStandardsPage';
@@ -172,8 +173,25 @@ function App() {
         }
       : null;
 
+  // Force password reset: when an admin sets a temp password via Teams admin,
+  // the worker flips user_metadata.must_reset_password = true. Anywhere a
+  // gated page would render, we instead redirect to /set-password (worker-
+  // served static page that updates the password AND clears the flag).
+  // window.location.href on /set-password is fine because that route is
+  // outside React Router — the worker intercepts and serves the HTML.
+  const mustResetPassword = Boolean(
+    session?.user?.user_metadata?.must_reset_password === true,
+  );
+
   function gate(element: React.ReactNode, scope: string, adminOnly = false) {
     if (!sharedProps) return <Navigate to="/login" replace />;
+    if (mustResetPassword) {
+      // Hard redirect (not React Router) so the worker serves /set-password
+      if (typeof window !== 'undefined' && window.location.pathname !== '/set-password') {
+        window.location.assign('/set-password');
+      }
+      return null;
+    }
     if (adminOnly && !isAdmin) return <Navigate to="/invoices" replace />;
     return <ErrorBoundary scope={scope}>{element}</ErrorBoundary>;
   }
@@ -195,6 +213,16 @@ function App() {
           element={
             <ErrorBoundary scope="Login">
               {session ? <Navigate to="/invoices" replace /> : <LoginPage />}
+            </ErrorBoundary>
+          }
+        />
+        {/* Auth confirm — receives token_hash from branded email links,
+            exchanges it for a Supabase session, redirects to ?next=… */}
+        <Route
+          path="/auth/confirm"
+          element={
+            <ErrorBoundary scope="Auth Confirm">
+              <AuthConfirmPage />
             </ErrorBoundary>
           }
         />

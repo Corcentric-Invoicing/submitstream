@@ -40,6 +40,10 @@ type ConfirmAction =
   | { kind: 'reactivate'; member: TeamMember }
   | { kind: 'delete'; member: TeamMember };
 
+// Separate state from ConfirmAction because the password modal needs
+// input fields — not just a yes/no confirmation.
+type ResetPasswordTarget = { member: TeamMember } | null;
+
 interface PageProps {
   role: 'admin' | 'team' | 'supplier';
   userId: string;
@@ -53,10 +57,40 @@ export default function TeamsPage({ role, userId, userEmail }: PageProps) {
   const [inviting, setInviting] = useState(false);
   const [editing, setEditing] = useState<TeamMember | null>(null);
   const [confirm, setConfirm] = useState<ConfirmAction | null>(null);
+  const [resettingPassword, setResettingPassword] = useState<ResetPasswordTarget>(null);
+  const [resendingId, setResendingId] = useState<string | null>(null);
+  const [toast, setToast] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
 
   useEffect(() => {
     fetchMembers();
   }, []);
+
+  async function handleResendInvite(m: TeamMember) {
+    setResendingId(m.id);
+    setToast(null);
+    try {
+      const res = await authFetch(
+        `/api/team/${encodeURIComponent(m.id)}/resend-invite`,
+        { method: 'POST' },
+      );
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(body?.error || `HTTP ${res.status}`);
+      }
+      const flow = body?.flow === 'recovery' ? 'reset email' : 'invite';
+      setToast({
+        kind: 'ok',
+        text: `Sent a fresh ${flow} to ${m.email}. It will expire in a few hours — ask them to click it soon.`,
+      });
+    } catch (err) {
+      setToast({
+        kind: 'err',
+        text: err instanceof Error ? err.message : String(err),
+      });
+    } finally {
+      setResendingId(null);
+    }
+  }
 
   async function authFetch(path: string, init?: RequestInit) {
     const token = (await supabase.auth.getSession()).data.session?.access_token;
@@ -163,6 +197,26 @@ export default function TeamsPage({ role, userId, userEmail }: PageProps) {
         </div>
       )}
 
+      {toast && (
+        <div
+          className={
+            toast.kind === 'ok'
+              ? 'bg-success-soft border border-success/20 rounded-card px-3 py-2.5 text-xs text-success flex items-center justify-between gap-3'
+              : 'bg-danger-soft border border-danger/20 rounded-card px-3 py-2.5 text-xs text-danger flex items-center justify-between gap-3'
+          }
+        >
+          <span>{toast.text}</span>
+          <button
+            type="button"
+            onClick={() => setToast(null)}
+            className="text-current opacity-60 hover:opacity-100"
+            aria-label="Dismiss"
+          >
+            <X size={12} />
+          </button>
+        </div>
+      )}
+
       <div className="bg-white border border-line rounded-card shadow-1 overflow-hidden">
         <table className="w-full">
           <thead>
@@ -227,6 +281,23 @@ export default function TeamsPage({ role, userId, userEmail }: PageProps) {
                         <Pencil size={12} aria-hidden />
                         Edit
                       </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => setResettingPassword({ member: m })}
+                        title="Set a temporary password directly (bypasses email reset flow)"
+                      >
+                        Set password
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => handleResendInvite(m)}
+                        disabled={resendingId === m.id}
+                        title="Send a fresh invite (or reset email if they're already registered). Old links are invalidated."
+                      >
+                        {resendingId === m.id ? 'Sending…' : 'Resend invite'}
+                      </Button>
                       {m.active ? (
                         <Button
                           variant="ghost"
@@ -288,6 +359,22 @@ export default function TeamsPage({ role, userId, userEmail }: PageProps) {
           onConfirm={runConfirm}
         />
       )}
+
+      {resettingPassword && (
+        <SetPasswordModal
+          member={resettingPassword.member}
+          onClose={() => setResettingPassword(null)}
+          onSubmit={async (newPassword) => {
+            const res = await authFetch(`/api/team/${resettingPassword.member.id}/reset-password`, {
+              method: 'POST',
+              body: JSON.stringify({ password: newPassword }),
+            });
+            const body = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(body?.error || `HTTP ${res.status}`);
+            setResettingPassword(null);
+          }}
+        />
+      )}
     </div>
     </AppShell>
   );
@@ -330,9 +417,13 @@ function Td({
 }
 
 function RolePill({ role }: { role: TeamRole }) {
+  // `team` was a planned intermediate role that never shipped end-to-end
+  // (EditModal doesn't offer it, worker PATCH validator rejects it). Any
+  // legacy `team` rows in user_profiles render as their own pill so admins
+  // notice + migrate rather than seeing them silently masquerade as Admin.
   const labels: Record<TeamRole, { label: string; variant: React.ComponentProps<typeof Pill>['variant'] }> = {
     admin: { label: 'Admin', variant: 'processed' },
-    team: { label: 'Admin', variant: 'processed' },
+    team: { label: 'Team (legacy)', variant: 'neutral' },
     supplier: { label: 'Supplier', variant: 'neutral' },
   };
   const { label, variant } = labels[role] ?? { label: role, variant: 'neutral' as const };
@@ -404,9 +495,9 @@ function InviteModal({
     <div
       className="fixed inset-0 z-[60] flex items-center justify-center p-4"
       style={{ background: 'rgba(10,11,13,0.5)', backdropFilter: 'blur(3px)' }}
-      onClick={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
+      // NOTE: no backdrop click-to-close. A stray click outside the modal
+      // would nuke in-progress input — too easy to lose work. Users close
+      // via the X button or Cancel.
     >
       <div className="bg-white rounded-card shadow-2 max-w-md w-full">
         <div className="flex items-center justify-between px-5 py-3.5 border-b border-line">
@@ -422,8 +513,10 @@ function InviteModal({
         </div>
         <form onSubmit={handleSubmit} className="px-5 py-4 space-y-3">
           <p className="text-xs text-zinc-500">
-            We'll email them a magic link to set their password and access the
-            portal at their assigned role.
+            We'll email them an invite link. Clicking it lets them set a
+            password and sign in at their assigned role. Invites are
+            single-use and expire in about 24 hours — use Resend Invite
+            (or Set Password directly) if they miss the window.
           </p>
           <FormRow label="Display name" required>
             <input
@@ -532,9 +625,9 @@ function EditModal({
     <div
       className="fixed inset-0 z-[60] flex items-center justify-center p-4"
       style={{ background: 'rgba(10,11,13,0.5)', backdropFilter: 'blur(3px)' }}
-      onClick={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
+      // NOTE: no backdrop click-to-close. A stray click outside the modal
+      // would nuke in-progress input — too easy to lose work. Users close
+      // via the X button or Cancel.
     >
       <div className="bg-white rounded-card shadow-2 max-w-md w-full">
         <div className="flex items-center justify-between px-5 py-3.5 border-b border-line">
@@ -649,9 +742,8 @@ function ConfirmModal({
     <div
       className="fixed inset-0 z-[60] flex items-center justify-center p-4"
       style={{ background: 'rgba(10,11,13,0.5)', backdropFilter: 'blur(3px)' }}
-      onClick={(e) => {
-        if (e.target === e.currentTarget) onCancel();
-      }}
+      // NOTE: no backdrop click-to-close. Confirm/cancel via the explicit
+      // buttons only — prevents accidental dismiss of a destructive action prompt.
     >
       <div className="bg-white rounded-card shadow-2 max-w-sm w-full p-5">
         <div className="flex items-start gap-3 mb-3">
@@ -692,6 +784,173 @@ function FormRow({
         {required && <span className="text-danger">*</span>}
       </label>
       {children}
+    </div>
+  );
+}
+
+// ──────────────────────────────────────────────────────────
+// Set / reset password modal — bypasses the email reset flow
+// by directly calling the Supabase Admin API (via our worker)
+// to set a password on the user's auth.users row. Useful when:
+//   - User can't receive email (deliverability issue, typo'd address)
+//   - Admin wants to hand a temp password verbally / via secure channel
+//   - User forgot password and needs immediate access
+// ──────────────────────────────────────────────────────────
+
+function SetPasswordModal({
+  member,
+  onClose,
+  onSubmit,
+}: {
+  member: TeamMember;
+  onClose: () => void;
+  onSubmit: (newPassword: string) => Promise<void>;
+}) {
+  const [password, setPassword] = useState('');
+  const [confirm, setConfirm] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const who = member.display_name || member.email;
+  const passwordMismatch = confirm.length > 0 && confirm !== password;
+  const tooShort = password.length > 0 && password.length < 8;
+  const canSubmit =
+    !submitting &&
+    password.length >= 8 &&
+    password === confirm;
+
+  function generateRandom() {
+    // Mixed-case, digits, simple symbols — 16 chars, easy to read out loud.
+    const chars = 'ABCDEFGHJKMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789!@#$%';
+    let out = '';
+    const arr = new Uint32Array(16);
+    crypto.getRandomValues(arr);
+    for (let i = 0; i < 16; i++) out += chars[arr[i] % chars.length];
+    setPassword(out);
+    setConfirm(out);
+    setShowPassword(true);
+  }
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!canSubmit) return;
+    setSubmitting(true);
+    setError(null);
+    try {
+      await onSubmit(password);
+      // onSubmit closes the modal on success
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to set password');
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <div
+      className="fixed inset-0 z-[60] flex items-center justify-center p-4"
+      style={{ background: 'rgba(10,11,13,0.5)', backdropFilter: 'blur(3px)' }}
+      // NOTE: no backdrop click-to-close. Especially important here because
+      // losing an in-progress temp password to a stray click is brutal.
+    >
+      <div className="bg-white rounded-card shadow-2 max-w-md w-full overflow-hidden flex flex-col">
+        <div className="flex items-center justify-between px-5 py-3.5 border-b border-line">
+          <h3 className="text-base font-semibold text-ink">Set password for {who}</h3>
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={submitting}
+            className="text-zinc-500 hover:text-ink p-1 -m-1 disabled:opacity-40"
+            aria-label="Close"
+          >
+            <X size={16} />
+          </button>
+        </div>
+
+        <form onSubmit={handleSubmit} className="px-5 py-4 space-y-3">
+          <p className="text-[13px] text-zinc-600">
+            Sets a password directly on{' '}
+            <span className="font-mono text-xs text-ink">{member.email}</span>. They can use it immediately
+            without needing the email reset flow. Tell them to change it after their first sign-in.
+          </p>
+
+          <FormRow label="New password" required>
+            <div className="flex gap-2">
+              <input
+                type={showPassword ? 'text' : 'password'}
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                disabled={submitting}
+                autoFocus
+                placeholder="At least 8 characters"
+                className={inputClass}
+              />
+              <Button
+                type="button"
+                variant="secondary"
+                size="md"
+                onClick={() => setShowPassword((s) => !s)}
+                disabled={submitting}
+              >
+                {showPassword ? 'Hide' : 'Show'}
+              </Button>
+            </div>
+            {tooShort && (
+              <p className="text-[11px] text-danger mt-1">Password must be at least 8 characters.</p>
+            )}
+          </FormRow>
+
+          <FormRow label="Confirm password" required>
+            <input
+              type={showPassword ? 'text' : 'password'}
+              value={confirm}
+              onChange={(e) => setConfirm(e.target.value)}
+              disabled={submitting}
+              placeholder="Type the same password again"
+              className={inputClass}
+            />
+            {passwordMismatch && (
+              <p className="text-[11px] text-danger mt-1">Passwords don't match.</p>
+            )}
+          </FormRow>
+
+          <div className="flex items-center justify-between pt-1">
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={generateRandom}
+              disabled={submitting}
+              title="Generate a random 16-character password"
+            >
+              Generate random
+            </Button>
+            <span className="text-[11px] text-zinc-500">
+              {password.length >= 8 ? `${password.length} characters` : ' '}
+            </span>
+          </div>
+
+          {error && (
+            <div className="text-sm text-danger bg-danger/10 border border-danger/30 rounded-control px-3 py-2">
+              {error}
+            </div>
+          )}
+        </form>
+
+        <div className="flex items-center justify-end gap-2 px-5 py-3 border-t border-line bg-paper">
+          <Button variant="secondary" size="sm" onClick={onClose} disabled={submitting}>
+            Cancel
+          </Button>
+          <Button
+            variant="primary"
+            size="sm"
+            disabled={!canSubmit}
+            onClick={(e) => handleSubmit(e as unknown as React.FormEvent)}
+          >
+            {submitting ? 'Setting…' : 'Set password'}
+          </Button>
+        </div>
+      </div>
     </div>
   );
 }

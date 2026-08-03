@@ -18,6 +18,7 @@ import {
   Activity,
   ShieldCheck,
   Network,
+  UserCog,
   Search,
   Bell,
   HelpCircle,
@@ -84,6 +85,23 @@ export function AppShell({
   // Shared scope state from URL (?supplier=<id>) + suppliers list.
   const { supplierScope, suppliers, scopedSupplierName, setSupplierScope } =
     useAppState(role, userId);
+
+  // Pull the caller's display_name so we can personalize the supplier
+  // welcome ("Welcome Dustin"). Cheap one-shot query — RLS lets a user read
+  // their own profile via user_profiles_self_read.
+  const [displayName, setDisplayName] = useState<string | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const { data } = await supabase
+        .from('user_profiles')
+        .select('display_name')
+        .eq('id', userId)
+        .single();
+      if (!cancelled) setDisplayName((data as { display_name?: string } | null)?.display_name ?? null);
+    })();
+    return () => { cancelled = true; };
+  }, [userId]);
 
   // Internal counts fetcher — sidebar badges. Re-fetches whenever the
   // supplier scope changes. If the parent provided counts (e.g. the
@@ -175,12 +193,25 @@ export function AppShell({
               <SubmitStreamLogo variant="dark" mark="icon" size="sm" />
             </span>
             <span className="min-w-0 flex-1">
-              <span className="block text-[13px] font-semibold text-ink leading-tight truncate">
-                SubmitStream
-              </span>
-              <span className="block text-[11px] text-zinc-500 leading-tight truncate mt-0.5">
-                {scopedSupplierName}
-              </span>
+              {isAdmin ? (
+                <>
+                  <span className="block text-[13px] font-semibold text-ink leading-tight truncate">
+                    SubmitStream
+                  </span>
+                  <span className="block text-[11px] text-zinc-500 leading-tight truncate mt-0.5">
+                    {scopedSupplierName}
+                  </span>
+                </>
+              ) : (
+                <>
+                  <span className="block text-[13px] font-semibold text-ink leading-tight truncate">
+                    {scopedSupplierName}
+                  </span>
+                  <span className="block text-[11px] text-zinc-500 leading-tight truncate mt-0.5">
+                    Welcome {displayName || 'back'}
+                  </span>
+                </>
+              )}
             </span>
             {isAdmin && (
               <ChevronsUpDown size={13} aria-hidden className="text-zinc-400 shrink-0" />
@@ -311,6 +342,9 @@ export function AppShell({
               </NavItem>
               <NavItem icon={<Plug size={14} />} to="/admin/promostandards">
                 PromoStandards
+              </NavItem>
+              <NavItem icon={<UserCog size={14} />} to="/admin/teams">
+                Teams
               </NavItem>
               <NavItem icon={<Activity size={14} />} to="/admin/activity">
                 Activity log

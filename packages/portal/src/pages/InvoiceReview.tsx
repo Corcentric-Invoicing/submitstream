@@ -12,6 +12,8 @@ import { SubmitStreamLogo } from '@/components/ui/submitstream-logo';
 import { BrandedSpinner } from '@/components/ui/branded-spinner';
 import { CustomerMatchBanner } from '../components/CustomerMatchBanner';
 import { ShipToMatchBanner } from '../components/ShipToMatchBanner';
+import { SubmissionHistory } from '../components/SubmissionHistory';
+import { CorcentricConfigBanner } from '../components/CorcentricConfigBanner';
 import {
   X,
   FileText,
@@ -22,6 +24,8 @@ import {
   AlertTriangle,
   ChevronRight,
   FlaskConical,
+  Trash2,
+  RotateCcw,
 } from 'lucide-react';
 import { cn } from '@/lib/cn';
 
@@ -181,13 +185,21 @@ export default function InvoiceReview({
 
   // ── DMS last submission ──
   // Both admin and supplier roles can submit, so both need to see the
-  // "last submission" state. RLS on dms_submissions handles visibility.
+  // "last submission" state. RLS on corcentric_submissions handles visibility.
+  //
+  // NOTE: table was renamed (dms_submissions → corcentric_submissions) and
+  // two columns changed (submission_status → status, doc_id → cor_response_id).
+  // The old query silently returned nothing, which is why the indicator
+  // disappeared.
   const [lastSubmission, setLastSubmission] = useState<DmsLastSubmission | null>(null);
+  // Bumped after every submit (success OR failure) so SubmissionHistory
+  // refetches and shows the new row.
+  const [historyReloadKey, setHistoryReloadKey] = useState(0);
   useEffect(() => {
     (async () => {
       const { data } = await supabase
-        .from('dms_submissions')
-        .select('cor_status_code, completed_at, doc_id, submission_status')
+        .from('corcentric_submissions')
+        .select('cor_status_code, completed_at, cor_response_id, status')
         .eq('invoice_id', invoice.id)
         .order('created_at', { ascending: false })
         .limit(1);
@@ -195,15 +207,15 @@ export default function InvoiceReview({
         | {
             cor_status_code?: number;
             completed_at?: string;
-            doc_id?: string;
-            submission_status?: string;
+            cor_response_id?: string;
+            status?: string;
           }[]
         | null)?.[0];
       if (row) {
         setLastSubmission({
           ago: relTime(row.completed_at) ?? 'recently',
           status: row.cor_status_code ?? 0,
-          docId: row.doc_id,
+          docId: row.cor_response_id,
         });
       }
     })();
@@ -269,13 +281,52 @@ export default function InvoiceReview({
     return Array.isArray(issues) ? (issues as string[]) : [];
   }, [invoice.ocr_raw_response]);
 
+  // Provider + model string + fallback detection — drives the OcrSummary
+  // badge color. Reads the actual model string from the sanitized raw
+  // response when possible (so claude-haiku-4-5-... etc. shows accurately
+  // instead of a hardcoded stale name).
+  //
+  // The pipeline is 3-tier: Mistral OCR (primary) → Pixtral (fallback 1,
+  // still free) → Claude Haiku (fallback 2, paid).
   const ocrModel = useMemo<string>(() => {
     const raw = (invoice.ocr_raw_response || {}) as Record<string, unknown>;
-    return invoice.ocr_provider === 'mistral'
-      ? 'mistral · pixtral-large'
-      : invoice.ocr_provider === 'claude'
-      ? 'anthropic · claude-3-sonnet'
-      : (raw['model'] as string) || invoice.ocr_provider;
+    const mistralMeta = raw.mistral as Record<string, unknown> | undefined;
+    const pixtralMeta = raw.pixtral as Record<string, unknown> | undefined;
+    const claudeMeta = raw.claude as Record<string, unknown> | undefined;
+
+    if (invoice.ocr_provider === 'mistral') {
+      const m = (mistralMeta?.model as string) || 'mistral-ocr-4-0';
+      return `mistral · ${m}`;
+    }
+    if (invoice.ocr_provider === 'pixtral') {
+      // We request `pixtral-large-latest` but Mistral resolves it server-side
+      // to `mistral-large-latest` (Pixtral was merged into Mistral Large's
+      // unified vision model). Show the underlying model + a "(vision)"
+      // annotation so admins know this was the vision-LLM tier, not the
+      // dedicated OCR endpoint.
+      const m = (pixtralMeta?.model as string) || 'mistral-large-latest';
+      return `mistral · ${m} (vision)`;
+    }
+    if (invoice.ocr_provider === 'claude') {
+      const m = (claudeMeta?.model as string) || 'claude-haiku-4-5';
+      return `anthropic · ${m}`;
+    }
+    return invoice.ocr_provider ?? 'unknown';
+  }, [invoice.ocr_provider, invoice.ocr_raw_response]);
+
+  // Detect when a fallback tier rescued the extraction (vs primary path
+  // succeeding cleanly). Drives the warning-yellow "(fallback)" badge so
+  // admins can spot which invoices needed help.
+  //   - Pixtral fallback = Mistral OCR failed but stayed on free tier
+  //   - Claude fallback = both Mistral tiers failed, paid path needed
+  // Sanitized Mistral metadata records pages_processed=0 when no pages
+  // were extracted; that's the signal a fallback was reached.
+  const ocrFallbackUsed = useMemo<boolean>(() => {
+    if (invoice.ocr_provider !== 'pixtral' && invoice.ocr_provider !== 'claude') return false;
+    const raw = (invoice.ocr_raw_response || {}) as Record<string, unknown>;
+    const m = raw.mistral as Record<string, unknown> | undefined;
+    if (!m) return false;
+    return m.pages_processed === 0 || m.pages_processed === undefined;
   }, [invoice.ocr_provider, invoice.ocr_raw_response]);
 
   // ── Field updates ──
@@ -343,18 +394,120 @@ export default function InvoiceReview({
     }
   }
 
-  // ── Status changes (Approve / Reject) ──
-  async function changeStatus(newStatus: 'processed' | 'rejected', feedback?: string) {
-    const update: Record<string, unknown> = { status: newStatus };
-    if (newStatus === 'rejected' && feedback) {
-      update.feedback = feedback;
-      update.needs_supplier_review = true;
-      update.feedback_date = new Date().toISOString();
+  // ── Re-run OCR ──
+  // Recovery path for invoices where OCR clearly failed (Mistral 5xx burst,
+  // Claude model error, image-only PDF, etc.). Worker re-fetches the PDF
+  // from R2, re-runs the pipeline (Mistral → Claude fallback), and overwrites
+  // invoice_data/confidence/validation_findings. Rate-limited server-side at 5.
+  const [showRetryConfirm, setShowRetryConfirm] = useState(false);
+  const [isRetrying, setIsRetrying] = useState(false);
+  const [retryError, setRetryError] = useState<string | null>(null);
+
+  const ocrLooksFailed = useMemo(() => extractionLooksFailed(invoice), [invoice]);
+
+  async function handleRetryOcr() {
+    setIsRetrying(true);
+    setRetryError(null);
+    try {
+      const token = (await supabase.auth.getSession()).data.session?.access_token;
+      const res = await fetch(`/api/invoices/${invoice.id}/retry-ocr`, {
+        method: 'POST',
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
+      if (!res.ok) {
+        let msg = `HTTP ${res.status}`;
+        try {
+          const body = await res.json();
+          if (body?.error) msg = body.error;
+        } catch { /* keep generic */ }
+        throw new Error(msg);
+      }
+      setShowRetryConfirm(false);
+      onChanged();
+      onClose(); // close to force a fresh read of the refreshed row
+    } catch (err) {
+      setRetryError(err instanceof Error ? err.message : 'Re-run OCR failed');
+      setIsRetrying(false);
     }
-    if (newStatus === 'processed') update.needs_supplier_review = false;
-    await supabase.from('invoices').update(update).eq('id', invoice.id);
-    onChanged();
-    onClose();
+  }
+
+  // ── Delete ──
+  // Hard-delete the invoice via the worker DELETE endpoint. Worker enforces
+  // the "no deleting submitted invoices" business rule and the supplier-scope
+  // check; client just renders the confirmation + handles the response.
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+
+  async function handleDelete() {
+    setIsDeleting(true);
+    setDeleteError(null);
+    try {
+      const token = (await supabase.auth.getSession()).data.session?.access_token;
+      const res = await fetch(`/api/invoices/${invoice.id}`, {
+        method: 'DELETE',
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
+      if (!res.ok) {
+        // Worker returns JSON {error: "..."} for handled failures (400 for
+        // "submitted invoices are permanent", 404 for scope miss, 401 for no auth)
+        let msg = `Delete failed (HTTP ${res.status})`;
+        try {
+          const body = await res.json();
+          if (body?.error) msg = body.error;
+        } catch { /* fall through with default */ }
+        throw new Error(msg);
+      }
+      // Success — refresh parent list and close the review overlay
+      onChanged();
+      onClose();
+    } catch (err) {
+      setDeleteError(err instanceof Error ? err.message : 'Delete failed');
+      setIsDeleting(false);
+    }
+  }
+
+  // ── Status changes (Approve / Reject) ──
+  // Routed through the worker's PATCH endpoint (NOT a direct supabase write)
+  // so the server-side side-effects fire: feedback_history audit row,
+  // rejection email to the original sender via Resend, access_audit_log entry.
+  // The worker handler itself sets needs_supplier_review + feedback_date when
+  // status='rejected', so the body only needs status + feedback.
+  const [statusBusy, setStatusBusy] = useState<'approve' | 'reject' | null>(null);
+  const [statusError, setStatusError] = useState<string | null>(null);
+  const [showRejectModal, setShowRejectModal] = useState(false);
+
+  async function changeStatus(newStatus: 'processed' | 'rejected', feedback?: string) {
+    setStatusBusy(newStatus === 'processed' ? 'approve' : 'reject');
+    setStatusError(null);
+    const body: Record<string, unknown> = { status: newStatus };
+    if (newStatus === 'rejected' && feedback) body.feedback = feedback;
+    if (newStatus === 'processed') body.needs_supplier_review = false;
+
+    try {
+      const token = (await supabase.auth.getSession()).data.session?.access_token;
+      const res = await fetch(`/api/invoices/${invoice.id}`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) {
+        let msg = `HTTP ${res.status}`;
+        try {
+          const errBody = await res.json();
+          if (errBody?.error) msg = errBody.error;
+        } catch { /* keep generic */ }
+        throw new Error(msg);
+      }
+      onChanged();
+      onClose();
+    } catch (err) {
+      setStatusError(err instanceof Error ? err.message : 'Status change failed');
+      setStatusBusy(null);
+    }
   }
 
   // ── DMS error state ──
@@ -463,6 +616,9 @@ export default function InvoiceReview({
       });
     } finally {
       setDmsBusy(null);
+      // Every submit (success OR failure) writes a corcentric_submissions
+      // row, so refresh the history panel to surface the new attempt.
+      setHistoryReloadKey((k) => k + 1);
     }
   }
 
@@ -682,8 +838,173 @@ export default function InvoiceReview({
               {saveStatus === 'saving' ? 'Saving…' : 'Save'}
             </button>
           )}
+          {/* Re-run OCR — shown only when extraction looks failed. Recovery path
+              for Mistral 5xx bursts, Claude errors, image-only PDFs. */}
+          {ocrLooksFailed && invoice.status !== 'submitted' && (
+            <button
+              onClick={() => setShowRetryConfirm(true)}
+              disabled={isRetrying}
+              className="inline-flex items-center gap-1.5 h-8 px-3 rounded-control text-xs font-medium transition-colors disabled:opacity-40"
+              style={{
+                background: 'rgba(234,179,8,0.10)',
+                border: '1px solid rgba(234,179,8,0.40)',
+                color: '#FACC15',
+              }}
+              aria-label="Re-run OCR"
+              title="Re-run OCR on this PDF (recovers from failed extraction)"
+            >
+              <RotateCcw size={13} />
+              {isRetrying ? 'Re-running…' : 'Re-run OCR'}
+            </button>
+          )}
+          {/* Delete — admin always; suppliers see it too (worker enforces scope + business rule).
+              Blocked at the API for status='submitted' invoices. */}
+          {invoice.status !== 'submitted' && (
+            <button
+              onClick={() => setShowDeleteConfirm(true)}
+              disabled={isDeleting}
+              className="inline-flex items-center gap-1.5 h-8 px-3 rounded-control text-xs font-medium transition-colors disabled:opacity-40"
+              style={{
+                background: 'rgba(220,38,38,0.10)',
+                border: '1px solid rgba(220,38,38,0.30)',
+                color: '#FCA5A5',
+              }}
+              aria-label="Delete invoice"
+              title="Delete this invoice"
+            >
+              <Trash2 size={13} />
+              Delete
+            </button>
+          )}
         </div>
       </div>
+
+      {/* ── Re-run OCR confirmation modal ── */}
+      {showRetryConfirm && (
+        <div
+          className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 px-4"
+          onClick={() => !isRetrying && setShowRetryConfirm(false)}
+        >
+          <div
+            className="w-full max-w-md bg-white border border-line rounded-card shadow-2 p-6 space-y-4"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-start gap-3">
+              <div className="shrink-0 h-9 w-9 rounded-control bg-warning/10 inline-flex items-center justify-center">
+                <RotateCcw size={18} className="text-warning" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <h2 className="text-base font-semibold text-ink">Re-run OCR on this invoice?</h2>
+                <p className="text-sm text-zinc-600 mt-1">
+                  <span className="font-mono text-xs text-zinc-500">{invoice.file_name}</span>
+                </p>
+              </div>
+            </div>
+            <p className="text-sm text-zinc-600">
+              We'll re-fetch the original PDF from storage and run it back through the
+              OCR pipeline (Mistral first, Claude as backup). Any existing extracted data
+              and validation findings will be <strong>overwritten</strong> with the new
+              result.
+            </p>
+            <p className="text-xs text-zinc-500">
+              Use this when the original extraction clearly failed — usually because Mistral
+              had a temporary outage or the PDF needed the Claude fallback. Each invoice can
+              be retried up to 5 times.
+            </p>
+            {retryError && (
+              <div className="text-sm text-danger bg-danger/10 border border-danger/30 rounded-control px-3 py-2">
+                {retryError}
+              </div>
+            )}
+            <div className="flex justify-end gap-2 pt-2">
+              <Button
+                variant="secondary"
+                onClick={() => setShowRetryConfirm(false)}
+                disabled={isRetrying}
+              >
+                Cancel
+              </Button>
+              <Button
+                variant="primary"
+                onClick={handleRetryOcr}
+                disabled={isRetrying}
+              >
+                {isRetrying ? 'Re-running OCR…' : 'Re-run OCR'}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Reject feedback modal ── */}
+      {showRejectModal && (
+        <RejectFeedbackModal
+          invoiceFileName={invoice.file_name}
+          sourceEmail={invoice.source_email}
+          submitting={statusBusy === 'reject'}
+          error={statusError}
+          onCancel={() => setShowRejectModal(false)}
+          onConfirm={async (feedback) => {
+            setShowRejectModal(false);
+            await changeStatus('rejected', feedback);
+          }}
+        />
+      )}
+
+      {/* ── Delete confirmation modal ── */}
+      {showDeleteConfirm && (
+        <div
+          className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 px-4"
+          onClick={() => !isDeleting && setShowDeleteConfirm(false)}
+        >
+          <div
+            className="w-full max-w-md bg-white border border-line rounded-card shadow-2 p-6 space-y-4"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-start gap-3">
+              <div className="shrink-0 h-9 w-9 rounded-control bg-danger/10 inline-flex items-center justify-center">
+                <Trash2 size={18} className="text-danger" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <h2 className="text-base font-semibold text-ink">Delete this invoice?</h2>
+                <p className="text-sm text-zinc-600 mt-1">
+                  <span className="font-mono text-xs text-zinc-500">{invoice.file_name}</span>
+                </p>
+              </div>
+            </div>
+            <p className="text-sm text-zinc-600">
+              This permanently removes the invoice row, its OCR data, audit history, and the
+              stored PDF. <strong>This cannot be undone.</strong>
+            </p>
+            <p className="text-xs text-zinc-500">
+              Note: invoices already submitted to Corcentric DMS cannot be deleted. The worker
+              will reject the request if the status changed to <code className="font-mono">submitted</code>{' '}
+              between when you opened this dialog and confirmed.
+            </p>
+            {deleteError && (
+              <div className="text-sm text-danger bg-danger/10 border border-danger/30 rounded-control px-3 py-2">
+                {deleteError}
+              </div>
+            )}
+            <div className="flex justify-end gap-2 pt-2">
+              <Button
+                variant="secondary"
+                onClick={() => setShowDeleteConfirm(false)}
+                disabled={isDeleting}
+              >
+                Cancel
+              </Button>
+              <Button
+                variant="danger"
+                onClick={handleDelete}
+                disabled={isDeleting}
+              >
+                {isDeleting ? 'Deleting…' : 'Delete invoice'}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ── OCR summary strip ── */}
       <div className="px-4 py-2.5 border-b border-line bg-paper">
@@ -692,6 +1013,8 @@ export default function InvoiceReview({
           uncertain={fieldCounts.uncertain}
           missing={fieldCounts.missing}
           model={ocrModel}
+          provider={invoice.ocr_provider as 'mistral' | 'claude' | 'manual' | null}
+          fallbackUsed={ocrFallbackUsed}
         />
       </div>
 
@@ -780,6 +1103,14 @@ export default function InvoiceReview({
                   the OCR'd Bill To didn't confidently match an existing
                   customer. Lets the reviewer link a candidate or create
                   a new customer pre-filled from the BillTo extraction. */}
+              {/* Corcentric config banner — surfaces BEFORE the customer /
+                  ship-to banners because if the supplier isn't wired for
+                  Corcentric at all, downstream matching is moot. Renders
+                  nothing when everything's configured. */}
+              {invoice.supplier_id && (
+                <CorcentricConfigBanner supplierId={invoice.supplier_id} />
+              )}
+
               {invoice.needs_customer_review && (
                 <CustomerMatchBanner
                   invoiceId={invoice.id}
@@ -808,6 +1139,11 @@ export default function InvoiceReview({
                   onResolved={onChanged}
                 />
               )}
+
+              {/* DMS history — every Corcentric submission attempt for this
+                  invoice (success, failure, dry-run). Collapsible; bumps
+                  via historyReloadKey after every Submit/DryRun click. */}
+              <SubmissionHistory invoiceId={invoice.id} reloadKey={historyReloadKey} />
 
               {/* Test-mode banner — supplier is flagged test_mode, so the
                   live "Submit to Corcentric" path is suppressed end-to-end
@@ -958,22 +1294,30 @@ export default function InvoiceReview({
                   <h3 className="text-sm font-semibold text-ink mb-2">Decision</h3>
                   <p className="text-xs text-zinc-500 mb-3">
                     Approve to mark as processed and move on. Reject to send back to the
-                    supplier with feedback.
+                    supplier with feedback — they'll get an email notification with the
+                    reason if the invoice came in via email.
                   </p>
                   <div className="flex gap-2">
-                    <Button variant="primary" onClick={() => changeStatus('processed')}>
-                      Approve
+                    <Button
+                      variant="primary"
+                      onClick={() => changeStatus('processed')}
+                      disabled={statusBusy !== null}
+                    >
+                      {statusBusy === 'approve' ? 'Approving…' : 'Approve'}
                     </Button>
                     <Button
                       variant="danger"
-                      onClick={() => {
-                        const fb = window.prompt('Feedback for the supplier:');
-                        if (fb) changeStatus('rejected', fb);
-                      }}
+                      onClick={() => setShowRejectModal(true)}
+                      disabled={statusBusy !== null}
                     >
                       Reject
                     </Button>
                   </div>
+                  {statusError && (
+                    <div className="mt-3 text-xs text-danger bg-danger/10 border border-danger/30 rounded-control px-3 py-2">
+                      {statusError}
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -1121,6 +1465,152 @@ function DmsErrorPanel({
 // ──────────────────────────────────────────────────────────
 // Helpers
 // ──────────────────────────────────────────────────────────
+
+// ──────────────────────────────────────────────────────────
+// Detect "OCR clearly failed" — drives the Re-run OCR button visibility.
+// Signals (any one of these counts):
+//   1. ocr_raw_response is missing or both providers returned error objects
+//   2. invoice_data has fewer than 3 substantive keys (excluding metadata
+//      and the VendorCode that post-processing sets even without OCR)
+// We're deliberately conservative — false positives lead users to retry
+// invoices that are actually fine but just need review, which is annoying
+// but harmless (worker rate-limits to 5 retries). False negatives hide
+// the recovery path from users who need it, which is worse.
+// ──────────────────────────────────────────────────────────
+
+function extractionLooksFailed(invoice: Invoice): boolean {
+  const raw = (invoice as unknown as { ocr_raw_response?: unknown }).ocr_raw_response;
+  const data = (invoice.invoice_data as Record<string, unknown> | undefined) ?? {};
+
+  // Signal 1: both OCR providers errored
+  if (raw && typeof raw === 'object') {
+    const r = raw as Record<string, unknown>;
+    const mistralStr = typeof r.mistral === 'string' ? r.mistral : '';
+    const claudeStr = typeof r.claude === 'string' ? r.claude : '';
+    const mistralErr = mistralStr.includes('"error"') || mistralStr.includes('"type":"error"');
+    const claudeErr = claudeStr.includes('"error"') || claudeStr.includes('"type":"error"');
+    if (mistralErr && claudeErr) return true;
+  }
+
+  // Signal 2: invoice_data is essentially empty (only post-process metadata)
+  const realKeys = Object.keys(data).filter(
+    (k) => !k.startsWith('_') && k !== 'VendorCode',
+  );
+  if (realKeys.length < 3) return true;
+
+  return false;
+}
+
+// ──────────────────────────────────────────────────────────
+// Reject feedback modal — multi-line textarea, source-email hint,
+// makes it obvious to the admin that confirm triggers a supplier
+// notification (not a silent rejection).
+// ──────────────────────────────────────────────────────────
+
+function RejectFeedbackModal({
+  invoiceFileName,
+  sourceEmail,
+  submitting,
+  error,
+  onCancel,
+  onConfirm,
+}: {
+  invoiceFileName: string;
+  sourceEmail: string | null;
+  submitting: boolean;
+  error: string | null;
+  onCancel: () => void;
+  onConfirm: (feedback: string) => void;
+}) {
+  const [feedback, setFeedback] = useState('');
+  const trimmed = feedback.trim();
+  const canSubmit = trimmed.length > 0 && !submitting;
+
+  return (
+    <div
+      className="fixed inset-0 z-[60] flex items-center justify-center p-4"
+      style={{ background: 'rgba(10,11,13,0.5)', backdropFilter: 'blur(3px)' }}
+      // NOTE: no backdrop click-to-close. A stray click outside the modal
+      // would nuke the rejection feedback the user is typing. Cancel via
+      // the explicit Cancel button only.
+    >
+      <div className="bg-white rounded-card shadow-2 max-w-lg w-full overflow-hidden flex flex-col">
+        <div className="flex items-center justify-between px-5 py-3.5 border-b border-line">
+          <h3 className="text-base font-semibold text-ink flex items-center gap-2">
+            <AlertTriangle size={14} className="text-danger" aria-hidden />
+            Reject invoice & notify supplier
+          </h3>
+          <button
+            type="button"
+            onClick={onCancel}
+            disabled={submitting}
+            className="text-zinc-500 hover:text-ink p-1 -m-1 disabled:opacity-40"
+            aria-label="Close"
+          >
+            <X size={16} />
+          </button>
+        </div>
+
+        <div className="px-5 py-4 space-y-3">
+          <p className="text-[13px] text-zinc-700">
+            Rejecting moves <span className="font-mono text-xs text-zinc-600">{invoiceFileName}</span>{' '}
+            back to <strong>Needs review</strong> for the supplier.
+            {sourceEmail ? (
+              <>
+                {' '}A notification email with your feedback will be sent to{' '}
+                <span className="font-mono text-xs text-ink">{sourceEmail}</span>.
+              </>
+            ) : (
+              <>
+                {' '}This invoice came in via upload (no source email), so the supplier
+                will only see the feedback when they next log into the portal.
+              </>
+            )}
+          </p>
+
+          <label className="block">
+            <span className="block text-[11px] uppercase tracking-[0.06em] font-semibold text-zinc-500 mb-1.5">
+              Feedback to the supplier
+            </span>
+            <textarea
+              autoFocus
+              rows={5}
+              value={feedback}
+              onChange={(e) => setFeedback(e.target.value)}
+              disabled={submitting}
+              placeholder="Explain what needs to change before the invoice can be re-sent. e.g. 'Missing PO number on line 3' or 'Bill-to address doesn't match our records.'"
+              className="w-full text-sm bg-paper border border-line rounded-control px-3 py-2 focus:outline-none focus:border-ink focus:ring-1 focus:ring-ink"
+            />
+            <span className="block text-[11px] text-zinc-500 mt-1">
+              This text is included verbatim in the notification email and shown on the
+              supplier's review screen.
+            </span>
+          </label>
+
+          {error && (
+            <div className="text-sm text-danger bg-danger/10 border border-danger/30 rounded-control px-3 py-2">
+              {error}
+            </div>
+          )}
+        </div>
+
+        <div className="flex items-center justify-end gap-2 px-5 py-3 border-t border-line bg-paper">
+          <Button variant="secondary" size="sm" onClick={onCancel} disabled={submitting}>
+            Cancel
+          </Button>
+          <Button
+            variant="danger"
+            size="sm"
+            disabled={!canSubmit}
+            onClick={() => canSubmit && onConfirm(trimmed)}
+          >
+            {submitting ? 'Rejecting…' : 'Reject & notify supplier'}
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 function ModeButton({
   active,

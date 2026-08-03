@@ -1,0 +1,55 @@
+name = "submitstream"
+account_id = "50c65f617dd2112476424061ea46db14"
+main = "src/index.ts"
+compatibility_date = "2024-06-01"
+compatibility_flags = ["nodejs_compat"]
+
+# Import .txt files as text modules (used for inline JS assets)
+[[rules]]
+type = "Text"
+globs = ["**/*.txt"]
+fallthrough = true
+
+# R2 bucket binding
+[[r2_buckets]]
+binding = "INVOICE_PDFS"
+bucket_name = "invoice-pdfs"
+
+# Environment variables (non-secret config only)
+[vars]
+SUPABASE_URL = "https://xlgnmmjklzbyzqxwnzlv.supabase.co"
+ENVIRONMENT = "production"
+
+# Email routing: receive emails sent to *@submitstream.com
+# Configure catch-all rule in Cloudflare Dashboard → Email Routing → Routing Rules
+
+# Scheduled triggers
+# Handler: `scheduled` export in src/index.ts — sweeps every PromoStandards-
+# enabled supplier whose poll interval has elapsed and pulls new invoices.
+#
+# ⚠️  PARKED AT WEEKLY until the first PromoStandards supplier is live.
+# Until then, the sweep is a no-op (zero suppliers have ps_ingestion_enabled=true),
+# so the frequency doesn't matter — weekly keeps log noise low and makes it
+# visually obvious in the Cloudflare dashboard that this is in "waiting" mode.
+#
+# 🔁  WHEN MAGNET (OR ANY OTHER PROMOSTANDARDS SUPPLIER) GOES LIVE:
+# change this back to "0 */6 * * *" (every 6 hours) and redeploy. Or edit
+# the schedule in the Cloudflare dashboard directly — Workers & Pages →
+# submitstream → Settings → Trigger Events → pencil icon on the Cron row.
+#
+# Note: Cloudflare's cron validator rejects numeric "0" for day-of-week
+# even though standard cron accepts it. Use SUN-SAT names for weekdays.
+[triggers]
+# Cloudflare's cron validator rejects numeric 0 in day-of-week; use SUN by name.
+crons = ["0 0 * * SUN"]  # weekly, Sundays 00:00 UTC — parked (see note above)
+
+# Secrets (set via wrangler secret put <KEY>):
+# SUPABASE_SERVICE_ROLE_KEY
+# SUPABASE_ANON_KEY
+# MISTRAL_API_KEY
+# ANTHROPIC_API_KEY
+# PORTAL_DOMAIN         ← optional, defaults to submitstream.com
+# RESEND_API_KEY         ← for sending error reply emails to senders
+# CORCENTRIC_API_URL     ← Corcentric DMS Web Service endpoint
+# CORCENTRIC_USERNAME    ← Corcentric DMS API username
+# CORCENTRIC_PASSWORD    ← Corcentric DMS API password

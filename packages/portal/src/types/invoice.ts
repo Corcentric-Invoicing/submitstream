@@ -10,7 +10,7 @@
  */
 export type InvoiceStatus = 'processing' | 'pending' | 'processed' | 'submitted' | 'rejected';
 export type ConfidenceLevel = 'high' | 'medium' | 'low';
-export type OCRProvider = 'mistral' | 'claude' | 'manual';
+export type OCRProvider = 'mistral' | 'pixtral' | 'claude' | 'manual';
 export type InvoiceSource = 'email' | 'upload';
 
 // ════════════════════════════════════════════════════════════════════

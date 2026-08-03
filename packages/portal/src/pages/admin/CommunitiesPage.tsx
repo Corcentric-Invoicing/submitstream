@@ -74,16 +74,18 @@ export default function CommunitiesPage({ role, userId, userEmail }: PageProps) 
       }
       const list: Community[] = Array.isArray(body) ? body : body?.data ?? [];
 
-      // Fetch supplier counts per community (best-effort).
-      const sup = await authFetch('/api/suppliers');
-      const supBody = await sup.json().catch(() => null);
-      const suppliers: Array<{ community_id?: string }> = Array.isArray(supBody)
-        ? supBody
-        : supBody?.data ?? [];
+      // Fetch supplier-count per community (best-effort) from the
+      // supplier_communities join. A supplier can belong to multiple
+      // communities now, so counting via supplier.community_id would
+      // miss any assignments made after the SUPPLIER-COMMUNITIES-REFACTOR.
+      const asn = await authFetch('/api/supplier-communities');
+      const asnBody = await asn.json().catch(() => null);
+      const assignments: Array<{ community_id?: string; active?: boolean }> =
+        asnBody?.data ?? [];
       const counts = new Map<string, number>();
-      for (const s of suppliers) {
-        if (s.community_id) {
-          counts.set(s.community_id, (counts.get(s.community_id) ?? 0) + 1);
+      for (const a of assignments) {
+        if (a.community_id && a.active !== false) {
+          counts.set(a.community_id, (counts.get(a.community_id) ?? 0) + 1);
         }
       }
       setCommunities(
@@ -318,9 +320,8 @@ function CommunityFormModal({
     <div
       className="fixed inset-0 z-[60] flex items-center justify-center p-4"
       style={{ background: 'rgba(10,11,13,0.5)', backdropFilter: 'blur(3px)' }}
-      onClick={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
+      // NOTE: no backdrop click-to-close. A stray click outside the modal
+      // would nuke in-progress form input. Users close via X or Cancel.
     >
       <div className="bg-white rounded-card shadow-2 max-w-lg w-full max-h-[90vh] overflow-hidden flex flex-col">
         <div className="flex items-center justify-between px-5 py-3.5 border-b border-line">
@@ -469,52 +470,73 @@ function CommunityFormModal({
 
 // ──────────────────────────────────────────────────────────
 // Suppliers tab — manage supplier ↔ community assignments
+//
+// Uses the supplier_communities join table (post SUPPLIER-COMMUNITIES-
+// REFACTOR), so a single supplier can be assigned to multiple
+// communities, each with its own Corcentric vendor + customer codes.
 // ──────────────────────────────────────────────────────────
 
 interface SupplierLite {
   id: string;
   name: string;
   code: string;
-  community_id: string | null;
   active: boolean;
+}
+
+interface AssignmentRow {
+  id: string;
+  supplier_id: string;
+  community_id: string;
+  cor_vendor_code: string | null;
+  cor_customer_code: string | null;
+  is_primary: boolean;
+  active: boolean;
+  suppliers?: { id: string; name: string; code: string } | null;
+}
+
+async function authFetch(path: string, init?: RequestInit) {
+  const token = (await supabase.auth.getSession()).data.session?.access_token;
+  return fetch(path, {
+    ...init,
+    headers: {
+      'Content-Type': 'application/json',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...(init?.headers ?? {}),
+    },
+  });
 }
 
 function CommunitySuppliersTab({ community }: { community: Community }) {
   const [suppliers, setSuppliers] = useState<SupplierLite[]>([]);
+  const [assignments, setAssignments] = useState<AssignmentRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState<string | null>(null);
-  const [pickerId, setPickerId] = useState<string>('');
   const [error, setError] = useState<string | null>(null);
-
-  async function authFetch(path: string, init?: RequestInit) {
-    const token = (await supabase.auth.getSession()).data.session?.access_token;
-    return fetch(path, {
-      ...init,
-      headers: {
-        'Content-Type': 'application/json',
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        ...(init?.headers ?? {}),
-      },
-    });
-  }
+  const [showAssignModal, setShowAssignModal] = useState(false);
+  const [editingAssignment, setEditingAssignment] = useState<AssignmentRow | null>(null);
 
   async function load() {
     setLoading(true);
     setError(null);
     try {
-      const res = await authFetch('/api/suppliers');
-      const body = await res.json();
-      const list: SupplierLite[] = (Array.isArray(body) ? body : body?.data ?? [])
+      const [supRes, asnRes] = await Promise.all([
+        authFetch('/api/suppliers'),
+        authFetch(`/api/supplier-communities?community_id=${encodeURIComponent(community.id)}`),
+      ]);
+      const supBody = await supRes.json();
+      const asnBody = await asnRes.json();
+      const supList: SupplierLite[] = (Array.isArray(supBody) ? supBody : supBody?.data ?? [])
         .map((s: Record<string, unknown>) => ({
           id: String(s.id),
           name: String(s.name),
           code: String(s.code),
-          community_id: (s.community_id as string | null) ?? null,
           active: Boolean(s.active ?? true),
         }))
         .filter((s: SupplierLite) => s.active)
         .sort((a: SupplierLite, b: SupplierLite) => a.name.localeCompare(b.name));
-      setSuppliers(list);
+      const asnList: AssignmentRow[] = (asnBody?.data ?? []) as AssignmentRow[];
+      setSuppliers(supList);
+      setAssignments(asnList);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -527,13 +549,12 @@ function CommunitySuppliersTab({ community }: { community: Community }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [community.id]);
 
-  async function patchSupplier(id: string, communityId: string | null) {
-    setBusyId(id);
+  async function removeAssignment(row: AssignmentRow) {
+    setBusyId(row.id);
     setError(null);
     try {
-      const res = await authFetch(`/api/suppliers/${encodeURIComponent(id)}`, {
-        method: 'PATCH',
-        body: JSON.stringify({ community_id: communityId }),
+      const res = await authFetch(`/api/supplier-communities/${encodeURIComponent(row.id)}`, {
+        method: 'DELETE',
       });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
@@ -547,100 +568,363 @@ function CommunitySuppliersTab({ community }: { community: Community }) {
     }
   }
 
-  const assigned = suppliers.filter((s) => s.community_id === community.id);
-  const available = suppliers.filter((s) => s.community_id !== community.id);
+  const assignedSupplierIds = new Set(assignments.map((a) => a.supplier_id));
+  const availableSuppliers = suppliers.filter((s) => !assignedSupplierIds.has(s.id));
 
   return (
-    <div className="px-5 py-4 space-y-4 overflow-y-auto flex-1">
-      <p className="text-[12px] text-zinc-500">
-        Suppliers assigned to this community use its DMS credentials when
-        their invoices are submitted to Corcentric. A supplier can belong
-        to one community at a time.
-      </p>
+    <>
+      <div className="px-5 py-4 space-y-4 overflow-y-auto flex-1">
+        <p className="text-[12px] text-zinc-500">
+          Suppliers assigned to this community use its DMS credentials when
+          their invoices are submitted to Corcentric. Each assignment carries
+          its own Corcentric vendor code (and optional customer-code default)
+          because vendor codes are scoped to the DMS community.
+        </p>
 
-      {error && (
-        <div className="bg-danger-soft border border-danger/20 rounded-control px-2.5 py-2 text-xs text-danger">
-          {error}
-        </div>
-      )}
-
-      {/* Assigned list */}
-      <div>
-        <div className="text-[10px] uppercase tracking-[0.06em] font-semibold text-zinc-500 mb-1.5">
-          Assigned · {assigned.length}
-        </div>
-        {loading ? (
-          <div className="text-[12px] text-zinc-500">Loading…</div>
-        ) : assigned.length === 0 ? (
-          <div className="text-[12px] text-zinc-500 italic">
-            No suppliers assigned yet — pick from the list below.
+        {error && (
+          <div className="bg-danger-soft border border-danger/20 rounded-control px-2.5 py-2 text-xs text-danger">
+            {error}
           </div>
-        ) : (
-          <ul className="space-y-1">
-            {assigned.map((s) => (
-              <li
-                key={s.id}
-                className="flex items-center gap-3 bg-paper border border-line rounded-control px-3 py-2"
-              >
-                <div className="flex-1 min-w-0">
-                  <div className="text-[13px] text-ink font-medium truncate">{s.name}</div>
-                  <div className="text-[11px] font-mono text-zinc-500 truncate">{s.code}</div>
-                </div>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  disabled={busyId === s.id}
-                  onClick={() => patchSupplier(s.id, null)}
-                >
-                  {busyId === s.id ? 'Removing…' : 'Remove'}
-                </Button>
-              </li>
-            ))}
-          </ul>
         )}
-      </div>
 
-      {/* Add picker */}
-      <div className="border-t border-line pt-4">
-        <div className="text-[10px] uppercase tracking-[0.06em] font-semibold text-zinc-500 mb-1.5">
-          Assign a supplier
+        {/* Assigned list */}
+        <div>
+          <div className="text-[10px] uppercase tracking-[0.06em] font-semibold text-zinc-500 mb-1.5">
+            Assigned · {assignments.length}
+          </div>
+          {loading ? (
+            <div className="text-[12px] text-zinc-500">Loading…</div>
+          ) : assignments.length === 0 ? (
+            <div className="text-[12px] text-zinc-500 italic">
+              No suppliers assigned yet — use Add supplier below.
+            </div>
+          ) : (
+            <ul className="space-y-1">
+              {assignments.map((a) => (
+                <li
+                  key={a.id}
+                  className="flex items-center gap-3 bg-paper border border-line rounded-control px-3 py-2"
+                >
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2">
+                      <span className="text-[13px] text-ink font-medium truncate">
+                        {a.suppliers?.name || a.supplier_id}
+                      </span>
+                      {a.is_primary && (
+                        <span className="text-[9px] uppercase tracking-[0.06em] font-semibold bg-brand/10 text-brand px-1.5 py-0.5 rounded">
+                          primary
+                        </span>
+                      )}
+                      {!a.active && (
+                        <span className="text-[9px] uppercase tracking-[0.06em] font-semibold bg-zinc-100 text-zinc-500 px-1.5 py-0.5 rounded">
+                          inactive
+                        </span>
+                      )}
+                    </div>
+                    <div className="text-[11px] font-mono text-zinc-500 mt-0.5 flex items-center gap-3 flex-wrap">
+                      <span className="truncate">{a.suppliers?.code || ''}</span>
+                      <span>
+                        vendor:{' '}
+                        <span className={cn('text-ink', !a.cor_vendor_code && 'text-danger')}>
+                          {a.cor_vendor_code || '— missing —'}
+                        </span>
+                      </span>
+                      {a.cor_customer_code && (
+                        <span>
+                          customer default: <span className="text-ink">{a.cor_customer_code}</span>
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => setEditingAssignment(a)}
+                    disabled={busyId === a.id}
+                  >
+                    Edit
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    disabled={busyId === a.id}
+                    onClick={() => removeAssignment(a)}
+                  >
+                    {busyId === a.id ? 'Removing…' : 'Remove'}
+                  </Button>
+                </li>
+              ))}
+            </ul>
+          )}
         </div>
-        <div className="flex gap-2">
-          <select
-            value={pickerId}
-            onChange={(e) => setPickerId(e.target.value)}
-            disabled={loading || available.length === 0}
-            className={cn(inputClass, 'flex-1')}
-          >
-            <option value="">
-              {available.length === 0
-                ? 'All active suppliers are already assigned'
-                : '— Choose a supplier —'}
-            </option>
-            {available.map((s) => (
-              <option key={s.id} value={s.id}>
-                {s.name}
-                {s.community_id ? ' (currently in another community)' : ''}
-              </option>
-            ))}
-          </select>
+
+        {/* Add CTA */}
+        <div className="border-t border-line pt-4">
           <Button
             variant="primary"
-            disabled={!pickerId || busyId !== null}
-            onClick={async () => {
-              const id = pickerId;
-              setPickerId('');
-              await patchSupplier(id, community.id);
-            }}
+            size="sm"
+            disabled={loading || availableSuppliers.length === 0}
+            onClick={() => setShowAssignModal(true)}
           >
-            Assign
+            + Add supplier
+          </Button>
+          {availableSuppliers.length === 0 && (
+            <span className="ml-3 text-[11px] text-zinc-500">
+              Every active supplier is already in this community.
+            </span>
+          )}
+        </div>
+      </div>
+
+      {/* Add assignment modal */}
+      {showAssignModal && (
+        <AssignmentModal
+          mode="create"
+          community={community}
+          existing={null}
+          availableSuppliers={availableSuppliers}
+          hasPrimaryAlready={false /* per-community; primary is per-supplier so we always allow on create */}
+          onClose={() => setShowAssignModal(false)}
+          onSaved={async () => {
+            setShowAssignModal(false);
+            await load();
+          }}
+        />
+      )}
+
+      {/* Edit assignment modal */}
+      {editingAssignment && (
+        <AssignmentModal
+          mode="edit"
+          community={community}
+          existing={editingAssignment}
+          availableSuppliers={suppliers /* show all so the name renders */}
+          hasPrimaryAlready={false}
+          onClose={() => setEditingAssignment(null)}
+          onSaved={async () => {
+            setEditingAssignment(null);
+            await load();
+          }}
+        />
+      )}
+    </>
+  );
+}
+
+// ── Assignment modal (create + edit) ─────────────────────────
+
+interface AssignmentModalProps {
+  mode: 'create' | 'edit';
+  community: Community;
+  existing: AssignmentRow | null;
+  availableSuppliers: SupplierLite[];
+  hasPrimaryAlready: boolean;
+  onClose: () => void;
+  onSaved: () => void | Promise<void>;
+}
+
+function AssignmentModal({
+  mode,
+  community,
+  existing,
+  availableSuppliers,
+  onClose,
+  onSaved,
+}: AssignmentModalProps) {
+  const [supplierId, setSupplierId] = useState(existing?.supplier_id ?? '');
+  const [vendorCode, setVendorCode] = useState(existing?.cor_vendor_code ?? '');
+  const [customerCode, setCustomerCode] = useState(existing?.cor_customer_code ?? '');
+  const [isPrimary, setIsPrimary] = useState(existing?.is_primary ?? true);
+  const [submitting, setSubmitting] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  // Default vendor code to supplier.code when supplier picked (create mode only)
+  const selectedSupplier = availableSuppliers.find((s) => s.id === supplierId);
+  useEffect(() => {
+    if (mode === 'create' && selectedSupplier && !vendorCode) {
+      setVendorCode(selectedSupplier.code);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [supplierId]);
+
+  async function handleSubmit() {
+    if (mode === 'create' && !supplierId) {
+      setErr('Pick a supplier.');
+      return;
+    }
+    if (!vendorCode.trim()) {
+      setErr('Vendor code is required — Corcentric uses it to identify this supplier in this DMS community.');
+      return;
+    }
+    setSubmitting(true);
+    setErr(null);
+    try {
+      const path =
+        mode === 'create'
+          ? '/api/supplier-communities'
+          : `/api/supplier-communities/${encodeURIComponent(existing!.id)}`;
+      const method = mode === 'create' ? 'POST' : 'PATCH';
+      const body =
+        mode === 'create'
+          ? {
+              supplier_id: supplierId,
+              community_id: community.id,
+              cor_vendor_code: vendorCode.trim(),
+              cor_customer_code: customerCode.trim() || null,
+              is_primary: isPrimary,
+            }
+          : {
+              cor_vendor_code: vendorCode.trim(),
+              cor_customer_code: customerCode.trim() || null,
+              is_primary: isPrimary,
+            };
+      const res = await authFetch(path, { method, body: JSON.stringify(body) });
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({}));
+        throw new Error(j?.error || `HTTP ${res.status}`);
+      }
+      await onSaved();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <div
+      className="fixed inset-0 z-[70] flex items-center justify-center p-4"
+      style={{ background: 'rgba(10,11,13,0.5)', backdropFilter: 'blur(3px)' }}
+      // NOTE: no backdrop click-to-close. A stray click outside the modal
+      // would nuke in-progress codes. Users close via X or Cancel.
+    >
+      <div className="bg-white rounded-card shadow-2 max-w-md w-full">
+        <div className="flex items-center justify-between px-5 py-3.5 border-b border-line">
+          <div>
+            <h3 className="text-base font-semibold text-ink">
+              {mode === 'create' ? 'Add supplier to community' : 'Edit assignment'}
+            </h3>
+            <p className="text-xs text-zinc-500 mt-0.5">
+              {community.name} ({community.code})
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="text-zinc-500 hover:text-ink p-1 -m-1"
+            aria-label="Close"
+          >
+            <X size={16} />
+          </button>
+        </div>
+
+        <div className="px-5 py-4 space-y-3">
+          {/* Supplier picker (create only) */}
+          {mode === 'create' ? (
+            <div>
+              <label className="text-[11px] uppercase tracking-[0.06em] font-semibold text-zinc-500 block mb-1">
+                Supplier
+              </label>
+              <select
+                value={supplierId}
+                onChange={(e) => setSupplierId(e.target.value)}
+                className={inputClass}
+                disabled={submitting}
+              >
+                <option value="">— Choose a supplier —</option>
+                {availableSuppliers.map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {s.name} ({s.code})
+                  </option>
+                ))}
+              </select>
+            </div>
+          ) : (
+            <div>
+              <div className="text-[11px] uppercase tracking-[0.06em] font-semibold text-zinc-500 mb-1">
+                Supplier
+              </div>
+              <div className="text-[13px] text-ink">
+                {existing?.suppliers?.name} ({existing?.suppliers?.code})
+              </div>
+            </div>
+          )}
+
+          {/* Vendor code */}
+          <div>
+            <label className="text-[11px] uppercase tracking-[0.06em] font-semibold text-zinc-500 block mb-1">
+              Corcentric vendor code *
+            </label>
+            <input
+              type="text"
+              value={vendorCode}
+              onChange={(e) => setVendorCode(e.target.value)}
+              placeholder="e.g. IPWS-EASYLBS"
+              className={cn(inputClass, 'font-mono')}
+              disabled={submitting}
+            />
+            <p className="text-[11px] text-zinc-500 mt-1">
+              The identifier Corcentric uses for this supplier in this DMS.
+              Defaults to the supplier code; override if Corcentric assigned
+              a different value.
+            </p>
+          </div>
+
+          {/* Customer code (optional default) */}
+          <div>
+            <label className="text-[11px] uppercase tracking-[0.06em] font-semibold text-zinc-500 block mb-1">
+              Default customer code <span className="text-zinc-400 normal-case">(optional)</span>
+            </label>
+            <input
+              type="text"
+              value={customerCode}
+              onChange={(e) => setCustomerCode(e.target.value)}
+              placeholder="Used when ShipTo / BillTo name doesn't match"
+              className={cn(inputClass, 'font-mono')}
+              disabled={submitting}
+            />
+            <p className="text-[11px] text-zinc-500 mt-1">
+              Fallback customer code used when the OCR ship-to/bill-to name
+              doesn't resolve to a customer. Leave blank to require a customer
+              match per invoice.
+            </p>
+          </div>
+
+          {/* Primary flag */}
+          <div>
+            <label className="flex items-center gap-2 text-[12px] text-ink">
+              <input
+                type="checkbox"
+                checked={isPrimary}
+                onChange={(e) => setIsPrimary(e.target.checked)}
+                disabled={submitting}
+              />
+              <span>
+                Make this the supplier's <strong>primary</strong> community
+              </span>
+            </label>
+            <p className="text-[11px] text-zinc-500 mt-1 ml-5">
+              Used as the default community for submission and auto-ingestion
+              when no community is otherwise specified. Setting this here
+              demotes any other primary the supplier has.
+            </p>
+          </div>
+
+          {err && (
+            <div className="bg-danger-soft border border-danger/20 rounded-control px-2.5 py-2 text-xs text-danger">
+              {err}
+            </div>
+          )}
+        </div>
+
+        <div className="flex items-center justify-end gap-2 px-5 py-3 border-t border-line">
+          <Button variant="ghost" size="sm" onClick={onClose} disabled={submitting}>
+            Cancel
+          </Button>
+          <Button variant="primary" size="sm" onClick={handleSubmit} disabled={submitting}>
+            {submitting ? 'Saving…' : mode === 'create' ? 'Add' : 'Save'}
           </Button>
         </div>
-        {available.some((s) => s.community_id) && (
-          <p className="text-[11px] text-zinc-500 mt-1.5">
-            Picking a supplier already in another community moves it here.
-          </p>
-        )}
       </div>
     </div>
   );
@@ -665,9 +949,8 @@ function DeleteConfirm({
     <div
       className="fixed inset-0 z-[60] flex items-center justify-center p-4"
       style={{ background: 'rgba(10,11,13,0.5)', backdropFilter: 'blur(3px)' }}
-      onClick={(e) => {
-        if (e.target === e.currentTarget) onCancel();
-      }}
+      // NOTE: no backdrop click-to-close. Confirm/cancel via explicit
+      // buttons — prevents accidental dismiss of a destructive action prompt.
     >
       <div className="bg-white rounded-card shadow-2 max-w-sm w-full p-5">
         <div className="flex items-start gap-3 mb-3">

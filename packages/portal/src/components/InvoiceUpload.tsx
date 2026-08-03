@@ -100,9 +100,9 @@ export default function InvoiceUpload({ onClose, onUploadComplete }: Props) {
     <div
       className="fixed inset-0 z-[60] flex items-center justify-center p-4"
       style={{ background: 'rgba(10,11,13,0.5)', backdropFilter: 'blur(3px)' }}
-      onClick={(e) => {
-        if (e.target === e.currentTarget && !uploading) onClose();
-      }}
+      // NOTE: no backdrop click-to-close. A stray click outside the modal
+      // would nuke an in-progress upload — too easy to lose work. Users
+      // close via the X button or Cancel.
     >
       <div className="bg-white rounded-card shadow-2 max-w-lg w-full overflow-hidden">
         {/* Header */}
