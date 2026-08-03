@@ -513,10 +513,12 @@ function InviteModal({
         </div>
         <form onSubmit={handleSubmit} className="px-5 py-4 space-y-3">
           <p className="text-xs text-zinc-500">
-            We'll email them an invite link. Clicking it lets them set a
-            password and sign in at their assigned role. Invites are
-            single-use and expire in about 24 hours — use Resend Invite
-            (or Set Password directly) if they miss the window.
+            We'll email them a 6-digit invite code. They enter it at{' '}
+            <span className="font-mono text-ink">submitstream.com/accept-invite</span>{' '}
+            along with a password of their choosing. Codes are single-use
+            and expire in about 24 hours — use Resend Invite (or Set
+            Password directly) if they miss the window. Codes work on
+            Outlook / corporate email where link-based invites often break.
           </p>
           <FormRow label="Display name" required>
             <input

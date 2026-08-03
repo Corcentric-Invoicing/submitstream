@@ -51,7 +51,8 @@ initial commit is pushed, it's safe to delete the external copy.
 ```bash
 # Portal only
 cd /Users/dc/Desktop/SubmitStream
-export CLOUDFLARE_API_TOKEN="cfut_XXXX"   # [ACCOUNT] — get real token from 1Password / .env.local
+# Token is auto-loaded from .env.local (gitignored) by deploy-portal.sh.
+# For worker-only commands, either export in .zshrc or `source .env.local`.
 ./scripts/deploy-portal.sh
 
 # Portal + worker in one shot
@@ -59,7 +60,8 @@ export CLOUDFLARE_API_TOKEN="cfut_XXXX"   # [ACCOUNT] — get real token from 1P
 
 # Worker only
 cd /Users/dc/Desktop/SubmitStream/packages/worker
-export CLOUDFLARE_API_TOKEN="cfut_XXXX"   # [ACCOUNT] — get real token from 1Password / .env.local
+# Token is auto-loaded from .env.local (gitignored) by deploy-portal.sh.
+# For worker-only commands, either export in .zshrc or `source .env.local`.
 npx wrangler deploy
 
 # Tail worker logs

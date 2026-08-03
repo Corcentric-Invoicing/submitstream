@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  </head>
+  <body style="margin:0;padding:0;background:#f5f5f4;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;">
+    <div style="display:none;max-height:0;overflow:hidden;">Your SubmitStream invite code is {{ .Token }}. Expires in 24 hours.</div>
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f5f5f4;padding:32px 20px;">
+      <tr><td align="center">
+        <table role="presentation" width="480" cellpadding="0" cellspacing="0" style="background:#FAF8F7;border-radius:16px;overflow:hidden;">
+          <tr>
+            <td style="padding:26px 32px 0;">
+              <table role="presentation" cellpadding="0" cellspacing="0"><tr>
+                <td style="background:#1A1A1A;width:38px;height:38px;border-radius:8px;text-align:center;vertical-align:middle;padding:6px;">
+                  <img src="{{ .SiteURL }}/favicon.svg" alt="" width="26" height="26" style="display:block;margin:0 auto;" />
+                </td>
+                <td style="padding-left:12px;font-size:18px;font-weight:700;color:#1A1A1A;letter-spacing:-0.01em;">SubmitStream</td>
+              </tr></table>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:28px 32px 8px;">
+              <h1 style="margin:0 0 8px;font-size:22px;color:#1A1A1A;font-weight:700;letter-spacing:-0.01em;">You're invited to SubmitStream</h1>
+              <p style="margin:0 0 20px;font-size:14px;color:#4b5563;line-height:1.55;">Use this 6-digit code to accept the invite and set your password. Code expires in <strong>24 hours</strong>.</p>
+            </td>
+          </tr>
+          <tr>
+            <td align="center" style="padding:0 32px 20px;">
+              <div style="display:inline-block;background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:20px 28px;font-family:'SF Mono',Menlo,Monaco,Consolas,monospace;font-size:34px;font-weight:700;letter-spacing:0.28em;color:#1A1A1A;">{{ .Token }}</div>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:0 32px 20px;">
+              <p style="margin:0 0 12px;font-size:14px;color:#1A1A1A;line-height:1.55;"><strong>How to accept:</strong></p>
+              <ol style="margin:0 0 12px;padding-left:20px;font-size:13px;color:#4b5563;line-height:1.7;">
+                <li>Go to <a href="{{ .SiteURL }}/accept-invite" style="color:#E8613C;text-decoration:none;font-weight:600;">{{ .SiteURL }}/accept-invite</a></li>
+                <li>Enter your email address</li>
+                <li>Enter the 6-digit code above</li>
+                <li>Choose a password</li>
+              </ol>
+              <p style="margin:0;font-size:12px;color:#9ca3af;line-height:1.55;">If you weren't expecting this invite, ignore the email — no account is created until you accept.</p>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:16px 32px 24px;border-top:1px solid #eee;background:#fafafa;">
+              <p style="margin:0;font-size:11px;color:#9ca3af;text-align:center;">SubmitStream · Automated invoice submission for Corcentric DMS</p>
+            </td>
+          </tr>
+        </table>
+      </td></tr>
+    </table>
+  </body>
+</html>

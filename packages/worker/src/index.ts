@@ -23,6 +23,8 @@ import SET_PASSWORD_HTML from './set-password.html.txt';
 import FORGOT_PASSWORD_HTML from './forgot-password.html.txt';
 // @ts-ignore — text module import (reset-password page served inline)
 import RESET_PASSWORD_HTML from './reset-password.html.txt';
+// @ts-ignore — text module import (accept-invite OTP page served inline)
+import ACCEPT_INVITE_HTML from './accept-invite.html.txt';
 
 // Inline assets served directly from the Worker bundle.
 // Currently empty — all inject scripts retired (see comment above).
@@ -162,6 +164,25 @@ function serveResetPasswordPage(env: CombinedEnv): Response {
   });
 }
 
+/**
+ * Serve the accept-invite page (OTP-based invite acceptance).
+ * User enters email + 6-digit code from the invite email + a new password.
+ * Codes work on Outlook / corporate email where link-based invites break
+ * because Microsoft ATP pre-fetches links and burns the single-use token.
+ */
+function serveAcceptInvitePage(env: CombinedEnv): Response {
+  const html = ACCEPT_INVITE_HTML
+    .replace('%%SUPABASE_URL%%', env.SUPABASE_URL)
+    .replace('%%SUPABASE_ANON_KEY%%', env.SUPABASE_ANON_KEY);
+
+  return new Response(html, {
+    headers: {
+      'Content-Type': 'text/html; charset=utf-8',
+      'Cache-Control': 'no-cache',
+    },
+  });
+}
+
 async function handleStaticAsset(request: Request, env: CombinedEnv): Promise<Response> {
   const url = new URL(request.url);
   let path = url.pathname;
@@ -179,6 +200,11 @@ async function handleStaticAsset(request: Request, env: CombinedEnv): Promise<Re
   // Serve the reset-password page (handles recovery email redirects)
   if (path === '/reset-password') {
     return serveResetPasswordPage(env);
+  }
+
+  // Serve the accept-invite page (OTP-based invite acceptance)
+  if (path === '/accept-invite') {
+    return serveAcceptInvitePage(env);
   }
 
   // Strip cache-busting query params for inline asset matching

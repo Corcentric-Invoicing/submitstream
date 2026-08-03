@@ -23,6 +23,11 @@ export default function LoginPage() {
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
+  // Supplier OTP flow: after sending the code, we transition to an OTP
+  // entry state on the same form. Codes work on Outlook / corporate email
+  // where magic-link URLs get pre-fetched and consumed.
+  const [otpStep, setOtpStep] = useState<'email' | 'code'>('email');
+  const [otpCode, setOtpCode] = useState('');
 
   async function handleAdminLogin(e: React.FormEvent) {
     e.preventDefault();
@@ -33,7 +38,7 @@ export default function LoginPage() {
     setLoading(false);
   }
 
-  async function handleMagicLink(e: React.FormEvent) {
+  async function handleSendOtp(e: React.FormEvent) {
     e.preventDefault();
     setLoading(true);
     setError('');
@@ -43,20 +48,61 @@ export default function LoginPage() {
     // auth user that lands on the "Account not configured" screen. New
     // suppliers are onboarded via the admin's Suppliers → Users → Invite
     // flow, which creates auth.users + user_profiles atomically.
+    //
+    // The email the user receives contains a 6-digit code (per the Magic
+    // Link template in Supabase Studio, which now uses {{ .Token }}).
+    // Corporate mail scanners can't consume a numeric code the way they
+    // can consume a link.
     const { error } = await supabase.auth.signInWithOtp({
       email,
       options: { shouldCreateUser: false },
     });
     if (error) {
-      // Friendlier copy than the raw Supabase error text.
       const msg = /signups? not allowed|user not found|otp_disabled/i.test(error.message)
         ? "We don't recognize this email. Ask your admin to send you an invite."
-        : error.message;
+        : /rate limit|too many/i.test(error.message)
+          ? 'Too many requests. Wait a minute and try again.'
+          : error.message;
       setError(msg);
     } else {
-      setMessage("Check your email for a login link.");
+      setMessage(`If an account exists for ${email}, a 6-digit code is on the way. Check your junk folder if you don't see it in 30 seconds.`);
+      setOtpStep('code');
     }
     setLoading(false);
+  }
+
+  async function handleVerifyOtp(e: React.FormEvent) {
+    e.preventDefault();
+    if (!/^\d{6}$/.test(otpCode)) {
+      setError('Enter the 6-digit code from your email.');
+      return;
+    }
+    setLoading(true);
+    setError('');
+    const { error } = await supabase.auth.verifyOtp({
+      email,
+      token: otpCode,
+      type: 'email',
+    });
+    if (error) {
+      const msg = /expired/i.test(error.message)
+        ? "That code has expired. Click 'Send another code' to get a new one."
+        : /invalid|not.found/i.test(error.message)
+          ? "That code isn't valid. Double-check the digits and try again."
+          : error.message;
+      setError(msg);
+      setLoading(false);
+      return;
+    }
+    // On success, session is set; App.tsx auth gate takes over and routes home.
+    setLoading(false);
+  }
+
+  function resetOtpFlow() {
+    setOtpStep('email');
+    setOtpCode('');
+    setError('');
+    setMessage('');
   }
 
   return (
@@ -170,6 +216,8 @@ export default function LoginPage() {
                 setIsAdminLogin(true);
                 setError('');
                 setMessage('');
+                setOtpStep('email');
+                setOtpCode('');
               }}
             >
               Admin
@@ -181,6 +229,8 @@ export default function LoginPage() {
                 setIsAdminLogin(false);
                 setError('');
                 setMessage('');
+                setOtpStep('email');
+                setOtpCode('');
               }}
             >
               Supplier
@@ -230,14 +280,11 @@ export default function LoginPage() {
                 {!loading && <ArrowRight size={14} aria-hidden />}
               </Button>
             </form>
-          ) : (
-            <form onSubmit={handleMagicLink} className="space-y-4">
+          ) : otpStep === 'email' ? (
+            <form onSubmit={handleSendOtp} className="space-y-4">
               <Field
                 label="Email"
                 action={
-                  // Supplier who was set up with a password (via admin
-                  // Set-Password) needs a way to reset. Without this link
-                  // they'd be stuck resending magic links forever.
                   <a
                     href="/forgot-password"
                     className="text-[12px] text-zinc-500 hover:text-ink"
@@ -263,12 +310,63 @@ export default function LoginPage() {
                 disabled={loading}
                 className="w-full !h-11 mt-2"
               >
-                {loading ? 'Sending…' : 'Send login link'}
+                {loading ? 'Sending…' : 'Send code'}
                 {!loading && <ArrowRight size={14} aria-hidden />}
               </Button>
               <p className="text-[12px] text-zinc-500 text-center pt-1">
-                We'll email a one-time link. No password needed.
+                We'll email a 6-digit code. No password needed.
               </p>
+            </form>
+          ) : (
+            <form onSubmit={handleVerifyOtp} className="space-y-4">
+              <div className="rounded-control bg-zinc-50 border border-line px-3 py-2 text-[12px] text-zinc-600">
+                Code sent to <span className="font-mono text-ink">{email}</span>
+              </div>
+              <Field
+                label="6-digit code"
+                action={
+                  <button
+                    type="button"
+                    onClick={() => handleSendOtp({ preventDefault: () => {} } as React.FormEvent)}
+                    disabled={loading}
+                    className="text-[12px] text-zinc-500 hover:text-ink"
+                  >
+                    Send another code
+                  </button>
+                }
+              >
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  autoComplete="one-time-code"
+                  maxLength={6}
+                  value={otpCode}
+                  onChange={(e) => setOtpCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                  placeholder="000000"
+                  autoFocus
+                  className={cn(
+                    inputClass,
+                    '!text-center !text-[22px] !font-mono !tracking-[0.4em] !py-3',
+                  )}
+                />
+              </Field>
+              <Button
+                type="submit"
+                variant="brand"
+                size="lg"
+                disabled={loading || otpCode.length !== 6}
+                className="w-full !h-11 mt-2"
+              >
+                {loading ? 'Verifying…' : 'Sign in'}
+                {!loading && <ArrowRight size={14} aria-hidden />}
+              </Button>
+              <button
+                type="button"
+                onClick={resetOtpFlow}
+                className="w-full text-center text-[12px] text-zinc-500 hover:text-ink pt-1"
+              >
+                Use a different email
+              </button>
             </form>
           )}
 

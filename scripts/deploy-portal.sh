@@ -24,6 +24,27 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 PORTAL_DIR="$REPO_ROOT/packages/portal"
+
+# Auto-load repo-local secrets from .env.local so you don't have to export
+# CLOUDFLARE_API_TOKEN in every terminal. File is gitignored (see
+# .gitignore) — token stays on your Mac. Format:
+#   CLOUDFLARE_API_TOKEN=cfut_XXXXXXXXXXXXXXX
+# One line per var. Anything already exported wins (won't overwrite an
+# explicit export).
+if [[ -f "$REPO_ROOT/.env.local" ]]; then
+  set -a  # auto-export every var we source
+  # shellcheck disable=SC1091
+  source "$REPO_ROOT/.env.local"
+  set +a
+fi
+
+if [[ -z "${CLOUDFLARE_API_TOKEN:-}" ]]; then
+  echo "✗ CLOUDFLARE_API_TOKEN is not set."
+  echo "  Fix: create $REPO_ROOT/.env.local with:"
+  echo "    CLOUDFLARE_API_TOKEN=cfut_your_real_token_here"
+  echo "  (file is gitignored, stays on your machine only)"
+  exit 1
+fi
 # Worker lives in the monorepo now (packages/worker). Fall back to the
 # legacy $HOME/Downloads path if packages/worker doesn't exist yet — that
 # way anyone with the old layout still deploys, and $WORKER_DIR env var
