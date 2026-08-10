@@ -6,30 +6,30 @@ codebase.
 
 ---
 
-## ⚠️ ACCOUNT MIGRATION IN PROGRESS
+## ⚠️ CLOUDFLARE ACCOUNT MIGRATION PENDING
 
-Everything below tagged `[ACCOUNT]` is about to change — we are moving from
-the **STCH Network** Cloudflare account to **Narrows**. When the migration
-lands, update:
+The worker + R2 bucket + DNS currently live under a personal Cloudflare
+account, not the primary Corcentric-owned one. Everything tagged
+`[ACCOUNT]` below has to change when the migration completes:
 
-- `worker-deploy/wrangler.toml` → `account_id`
-- The `CLOUDFLARE_API_TOKEN` value (cfut_…)
+- `packages/worker/wrangler.toml` → `account_id`
+- The `CLOUDFLARE_API_TOKEN` value in `.env.local` (cfut_…)
 - This file (search for `[ACCOUNT]`)
 - Any DNS / R2 / email-routing references to the old account
 
-Until the migration: use the existing token + account_id.
+Until the migration: use the existing token + account_id. See
+`CLOUDFLARE-CONSOLIDATION.md` for the runbook.
 
 ---
 
 ## GitHub
 
 - Repo: `https://github.com/Corcentric-Invoicing/submitstream`
-- Push identity: `dustin-narrowsweb` (Narrows account) — has push rights via the
-  Corcentric-Invoicing org. The org name is Corcentric-side; the account
-  pushing is Narrows-side. Don't get thrown off — different from Cloudflare
-  ownership (which is separately migrating STCH → Narrows, see [ACCOUNT]).
-- The older name `Corcentric-Invoicing/corcentric-invoicing` was renamed to
-  `submitstream` inside the same org.
+- Push identity: a personal GitHub user with contributor access to the
+  Corcentric-Invoicing org. Auth via classic PAT stored inline in the
+  local git remote URL (see `.git/config`).
+- The older repo name `Corcentric-Invoicing/corcentric-invoicing` was
+  renamed to `submitstream` inside the same org.
 
 ## Repo layout (monorepo — everything lives here now)
 
@@ -74,14 +74,14 @@ npx wrangler tail
 That script (`wrangler pages deploy dist`) is a **stale leftover**. The portal
 is NOT served by Cloudflare Pages — it's served by the Worker from R2 under
 the `portal/` prefix. Running the package.json deploy script will prompt to
-pick a Pages project (the only one visible, `stch`, is unrelated).
+pick a Pages project — the one that shows up is unrelated to this codebase.
 
 ### Why the `CLOUDFLARE_API_TOKEN` export?  [ACCOUNT]
 
-`wrangler whoami` shows `dustin@narrowsweb.com`, but the worker + R2 bucket
-live in the `Dcochran@stchnetwork.com` account (id
-`50c65f617dd2112476424061ea46db14`). The API token forces wrangler to that
-account. Goes away after the Narrows migration.
+The interactive `wrangler` login on this machine is associated with a
+different Cloudflare account than the one hosting the worker + R2 bucket
+(account id `50c65f617dd2112476424061ea46db14`). The API token forces
+wrangler to that account. Goes away after the account consolidation.
 
 ---
 
