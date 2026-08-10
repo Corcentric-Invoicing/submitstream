@@ -76,25 +76,41 @@ export function serializeCorRequest(req: CorProcessRequest, prettyPrint = true):
   lines.push(`${indent}<corRequest>`);
   const i2 = indent + indent;
 
-  // ===== Header fields — order from working sample =====
+  // ===== Header fields =====
+  // Order per CORCENTRIC-DMS-GUIDE.md §3b "Confirmed Element Order (Tested
+  // via Curl)". The endpoint is XSD-strict — missing elements or wrong
+  // order produce a "1002" error with no descriptive body, because the
+  // WCF parser bails on the first mismatch. Emit every element in the
+  // sequence, as empty self-closing tags when we have no value.
+
+  // (1) core identity
   lines.push(`${i2}${el('corRequestID', r.corRequestID)}`);
   lines.push(`${i2}${el('corRequestType', r.corRequestType)}`);
   lines.push(`${i2}${el('corVendorCode', r.corVendorCode)}`);
   lines.push(`${i2}${el('corCustomerCode', r.corCustomerCode)}`);
   lines.push(`${i2}${el('corCommunityCode', r.corCommunityCode)}`);
+
+  // (2) authorization + transaction identity
+  lines.push(`${i2}${optEl('corAuthorizationCode', r.corAuthorizationCode)}`);
   lines.push(`${i2}${el('corTransactionType', r.corTransactionType)}`);
   lines.push(`${i2}${el('corTransactionNumber', r.corTransactionNumber)}`);
+
+  // (3) originating doc + dates + PO
   lines.push(`${i2}${optEl('corOriginatingDocumentNumber', r.corOriginatingDocumentNumber)}`);
   lines.push(`${i2}${el('corTransactionDate', r.corTransactionDate)}`);
   lines.push(`${i2}${optEl('corPurchaseOrderNumber', r.corPurchaseOrderNumber)}`);
+  lines.push(`${i2}${optEl('corPurchaseOrderDate', r.corPurchaseOrderDate)}`);
+
+  // (4) amounts + currency + billing ref
   lines.push(`${i2}${el('corTransactionAmount', r.corTransactionAmount)}`);
   lines.push(`${i2}${el('corAuthorizationAmount', r.corAuthorizationAmount)}`);
   lines.push(`${i2}${el('corCurrencyCode', r.corCurrencyCode)}`);
+  lines.push(`${i2}${optEl('corBillingReference', r.corBillingReference)}`);
 
-  // corPaymentTerms — empty container
+  // (5) payment/acceleration terms + point of sale
   lines.push(`${i2}${emptyEl('corPaymentTerms')}`);
+  lines.push(`${i2}${emptyEl('corAccelerationTerms')}`);
 
-  // corPointOfSale — empty container or populated
   if (r.corPointOfSale) {
     const pos = r.corPointOfSale;
     const i3 = i2 + indent;
@@ -111,7 +127,12 @@ export function serializeCorRequest(req: CorProcessRequest, prettyPrint = true):
     lines.push(`${i2}${emptyEl('corPointOfSale')}`);
   }
 
-  // corReferences
+  // (6) references → transactionInfo → asset — BEFORE sections per the
+  // XSD-enforced order confirmed by an actual DMS response ("List of
+  // possible elements expected: 'corReferences'" when we put sections
+  // first). Note: this contradicts DMS-GUIDE.md §3b as originally
+  // documented — the guide's listed sequence was incorrect. Trust the
+  // server's response over the doc.
   if (r.corReferences && r.corReferences.length > 0) {
     const i3 = i2 + indent;
     lines.push(`${i2}<corReferences>`);
@@ -125,8 +146,7 @@ export function serializeCorRequest(req: CorProcessRequest, prettyPrint = true):
   } else {
     lines.push(`${i2}${emptyEl('corReferences')}`);
   }
-
-  // corAsset — comes BEFORE corSections per working sample
+  lines.push(`${i2}${emptyEl('corTransactionInfo')}`);
   if (r.corAsset) {
     const a = r.corAsset;
     const i3 = i2 + indent;
@@ -144,15 +164,17 @@ export function serializeCorRequest(req: CorProcessRequest, prettyPrint = true):
     lines.push(`${i2}${emptyEl('corAsset')}`);
   }
 
-  // ===== Sections (line items) =====
+  // (7) sections (line items) — after references/transactionInfo/asset.
+  // Order INSIDE corSection: corSectionNumber → corSectionInfo →
+  // corComments → corLineDetails
   lines.push(`${i2}<corSections>`);
   for (const section of r.corSections) {
     const i3 = i2 + indent;
     lines.push(`${i3}<corSection>`);
     const i4 = i3 + indent;
     lines.push(`${i4}${el('corSectionNumber', section.corSectionNumber)}`);
+    lines.push(`${i4}${emptyEl('corSectionInfo')}`);
 
-    // corComments — per working sample, no corSectionInfo, just corComments directly
     if (section.corComments && section.corComments.length > 0) {
       const i5 = i4 + indent;
       lines.push(`${i4}<corComments>`);
@@ -168,36 +190,37 @@ export function serializeCorRequest(req: CorProcessRequest, prettyPrint = true):
       lines.push(`${i4}${emptyEl('corComments')}`);
     }
 
-    // corLineDetails
+    // corLineDetails — element order per guide:
+    //   Sequence → Type → Item → BuyerItem → ManufacturerCode →
+    //   Description → VMRSCode → PartCategories →
+    //   Quantity → UnitPrice → CorePrice → FET → Notes → UOM
     lines.push(`${i4}<corLineDetails>`);
     for (const line of section.corLineDetails) {
       const i5 = i4 + indent;
       lines.push(`${i5}<corLineDetail>`);
       const i6 = i5 + indent;
 
-      // Line detail elements — order from working sample
       lines.push(`${i6}${el('corLineDetailSequence', line.corLineDetailSequence)}`);
       lines.push(`${i6}${el('corLineDetailType', line.corLineDetailType)}`);
       lines.push(`${i6}${el('corLineDetailItem', line.corLineDetailItem)}`);
       lines.push(`${i6}${optEl('corLineDetailBuyerItem', line.corLineDetailBuyerItem)}`);
+      lines.push(`${i6}${optEl('corLineDetailManufacturerCode', line.corLineDetailManufacturerCode)}`);
 
-      // nvarchar(80) — truncate to 80 chars max
       const desc = String(line.corLineDetailDescription || line.corLineDetailItem || '').substring(0, 80);
       lines.push(`${i6}${el('corLineDetailDescription', desc)}`);
+      lines.push(`${i6}${optEl('corLineDetailVMRSCode', line.corLineDetailVMRSCode)}`);
 
-      // corPartCategories — required per working sample, empty if not provided
-      lines.push(`${i6}<corPartCategories>`);
-      lines.push(`${i6}${indent}<corPartCategory>`);
-      lines.push(`${i6}${indent}${indent}${emptyEl('corCategoryType')}`);
-      lines.push(`${i6}${indent}${indent}${emptyEl('corCategory')}`);
-      lines.push(`${i6}${indent}</corPartCategory>`);
-      lines.push(`${i6}</corPartCategories>`);
+      // corPartCategories — self-closing when empty is the working-sample
+      // pattern (Vijay's tested XML); nesting an empty corPartCategory
+      // inside was producing extra noise the XSD didn't demand.
+      lines.push(`${i6}${emptyEl('corPartCategories')}`);
 
       lines.push(`${i6}${el('corLineDetailQuantity', line.corLineDetailQuantity)}`);
       lines.push(`${i6}${el('corLineDetailUnitPrice', line.corLineDetailUnitPrice)}`);
+      lines.push(`${i6}${optEl('corLineDetailCorePrice', line.corLineDetailCorePrice)}`);
       lines.push(`${i6}${optEl('corLineDetailFET', line.corLineDetailFET)}`);
 
-      // corLineDetailNotes
+      // corLineDetailNotes — self-close when empty (matches working sample)
       if (line.corLineDetailNotes && line.corLineDetailNotes.length > 0) {
         lines.push(`${i6}<corLineDetailNotes>`);
         for (const note of line.corLineDetailNotes) {
@@ -205,16 +228,10 @@ export function serializeCorRequest(req: CorProcessRequest, prettyPrint = true):
         }
         lines.push(`${i6}</corLineDetailNotes>`);
       } else {
-        lines.push(`${i6}<corLineDetailNotes>`);
-        lines.push(`${i6}${indent}${emptyEl('corLineDetailNote')}`);
-        lines.push(`${i6}</corLineDetailNotes>`);
+        lines.push(`${i6}${emptyEl('corLineDetailNotes')}`);
       }
 
       lines.push(`${i6}${el('corLineDetailUOM', line.corLineDetailUOM)}`);
-
-      // corTransactionInfo — at LINE level per working sample
-      lines.push(`${i6}${emptyEl('corTransactionInfo')}`);
-
       lines.push(`${i5}</corLineDetail>`);
     }
     lines.push(`${i4}</corLineDetails>`);
@@ -223,7 +240,7 @@ export function serializeCorRequest(req: CorProcessRequest, prettyPrint = true):
   }
   lines.push(`${i2}</corSections>`);
 
-  // corTaxes — invoice-level
+  // corTaxes — invoice-level (after sections)
   if (r.corTaxes && r.corTaxes.length > 0) {
     const i3 = i2 + indent;
     lines.push(`${i2}<corTaxes>`);

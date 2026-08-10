@@ -292,15 +292,34 @@ export function mapInvoiceToCorRequest(
     }
   }
 
-  // Fallback: single tax line from total
+  // Fallback: read tax from single-field OR from the split fields our
+  // OCR schema produces (StateTaxAmount / LocalTaxAmount / FederalTaxAmount).
+  // Emit one corTax entry per non-zero source, using DMS tax type codes
+  // per CORCENTRIC-DMS-GUIDE.md §Tax Types (ST=state, LT=local; federal
+  // isn't in the code table so falls back to generic SALES if present).
   if (taxes.length === 0) {
+    // Legacy single-field path first (some suppliers configure this)
     const taxTotalField = cfg.fieldMappings.taxTotal || 'TaxAmount';
-    const taxTotal = getField(invoiceData, taxTotalField) || getField(invoiceData, 'SalesTax');
-    if (taxTotal && parseFloat(String(taxTotal).replace(/[$,]/g, '')) > 0) {
-      taxes.push({
-        corTaxType: 'SALES',
-        corTaxAmount: toCorAmount(taxTotal, 2),
-      });
+    const singleTax = getField(invoiceData, taxTotalField) || getField(invoiceData, 'SalesTax');
+    const singleTaxNum = singleTax ? parseFloat(String(singleTax).replace(/[$,]/g, '')) : 0;
+
+    // OCR-schema split-tax path
+    const stateTax = getField(invoiceData, 'StateTaxAmount');
+    const localTax = getField(invoiceData, 'LocalTaxAmount');
+    const federalTax = getField(invoiceData, 'FederalTaxAmount');
+    const stateNum = stateTax ? parseFloat(String(stateTax).replace(/[$,]/g, '')) : 0;
+    const localNum = localTax ? parseFloat(String(localTax).replace(/[$,]/g, '')) : 0;
+    const federalNum = federalTax ? parseFloat(String(federalTax).replace(/[$,]/g, '')) : 0;
+
+    // Prefer the split-tax fields when any is populated — more granular +
+    // matches DMS's per-type tax model. Fall back to single-field when no
+    // split values exist.
+    if (stateNum + localNum + federalNum > 0) {
+      if (stateNum > 0) taxes.push({ corTaxType: 'ST', corTaxAmount: toCorAmount(stateNum, 2) });
+      if (localNum > 0) taxes.push({ corTaxType: 'LT', corTaxAmount: toCorAmount(localNum, 2) });
+      if (federalNum > 0) taxes.push({ corTaxType: 'SALES', corTaxAmount: toCorAmount(federalNum, 2) });
+    } else if (singleTaxNum > 0) {
+      taxes.push({ corTaxType: 'SALES', corTaxAmount: toCorAmount(singleTaxNum, 2) });
     }
   }
 
