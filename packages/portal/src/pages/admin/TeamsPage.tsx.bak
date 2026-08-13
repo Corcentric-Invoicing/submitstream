@@ -45,7 +45,7 @@ type ConfirmAction =
 type ResetPasswordTarget = { member: TeamMember } | null;
 
 interface PageProps {
-  role: 'admin' | 'supplier';
+  role: 'admin' | 'team' | 'supplier';
   userId: string;
   userEmail: string | undefined;
 }

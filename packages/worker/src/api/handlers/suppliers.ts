@@ -10,6 +10,7 @@ import {
   createSupplierSchema,
   createSupplierRequiredFields,
   validatePatchSupplier,
+  PATCH_SUPPLIER_ALLOWED_FIELDS,
 } from '../middleware/validate';
 import { safeJsonBody, extractPathId, sanitizeDbError } from '../middleware/safeParse';
 import {
@@ -94,24 +95,15 @@ export async function patchSupplier(request: Request, ctx: RequestContext): Prom
   const validation = validatePatchSupplier(body);
   if (!validation.ok) return errorResponse(validation.errors.map(e => `${e.field}: ${e.message}`).join('; '), 400);
 
-  const allowedFields = [
-    'test_mode', 'name', 'code', 'email_prefix',
-    'contact_email', 'contact_name', 'active', 'extraction_template',
-    // Corcentric DMS config
-    'cor_api_url', 'cor_username', 'cor_password',
-    'cor_vendor_code', 'cor_customer_code', 'cor_community_code',
-    'cor_transaction_type', 'cor_currency_code',
-    'cor_field_mapping', 'cor_mapping_config', 'cor_ingestion_enabled',
-    'cor_remit_code', 'cor_freight_code',
-    'community_id',
-    // PromoStandards Invoice 1.0.0 ingestion config
-    'ps_endpoint_url', 'ps_ws_version',
-    'ps_auth_id', 'ps_auth_password',
-    'ps_ingestion_enabled', 'ps_poll_interval_hours',
-  ];
+  // Field allowlist derived from patchSupplierSchema — single source of
+  // truth via PATCH_SUPPLIER_ALLOWED_FIELDS in validate.ts. Adding a new
+  // supplier column now only needs updating the schema; both the validator
+  // and this handler pick it up automatically.
   const updateData: Record<string, unknown> = {};
-  for (const field of allowedFields) {
-    if (body[field] !== undefined) updateData[field] = body[field];
+  for (const field of PATCH_SUPPLIER_ALLOWED_FIELDS) {
+    if (body[field as string] !== undefined) {
+      updateData[field as string] = body[field as string];
+    }
   }
 
   const { data, error } = await updateSupplier(ctx.userClient, supplierId, updateData);

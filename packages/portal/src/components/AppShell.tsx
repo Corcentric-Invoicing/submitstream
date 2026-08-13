@@ -374,7 +374,7 @@ export function AppShell({
                 {userEmail ?? 'Account'}
               </span>
               <span className="block text-[10px] text-zinc-500 leading-tight truncate mt-0.5 capitalize">
-                {role === 'team' ? 'admin' : role}
+                {role}
               </span>
             </span>
             <LogOut size={13} aria-hidden className="text-zinc-400 group-hover:text-ink shrink-0" />

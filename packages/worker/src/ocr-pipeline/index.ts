@@ -7,6 +7,7 @@ import { extractWithMistral } from './mistral';
 import { extractWithPixtral } from './pixtral';
 import { extractWithClaude } from './claude';
 import { calculateConfidence, normalizeDates } from './confidence';
+import { withRetry, isTransientOcrFailure } from './retry';
 import type { InvoiceStatus, ConfidenceLevel, OCRProvider } from '../../shared/src/types/invoice';
 
 export interface OCRPipelineResult {
@@ -63,7 +64,14 @@ export async function processInvoicePDF(
 
   // ── Tier 1: Mistral OCR ────────────────────────────────────────────
   console.log('[OCR] Starting Mistral OCR extraction...');
-  const mistralResult = await extractWithMistral(pdfBytes, env.MISTRAL_API_KEY, options?.extractionTemplate);
+  const mistralResult = await withRetry(
+    () => extractWithMistral(pdfBytes, env.MISTRAL_API_KEY, options?.extractionTemplate),
+    {
+      isRetryable: isTransientOcrFailure,
+      onRetry: (attempt, waitMs, r) =>
+        console.log(`[OCR] Mistral transient failure (attempt ${attempt}): ${r.error}. Retrying in ${waitMs}ms…`),
+    },
+  );
   rawResponses.mistral = mistralResult.rawResponse;
 
   if (mistralResult.success && mistralResult.data) {
@@ -91,7 +99,14 @@ export async function processInvoicePDF(
 
   // ── Tier 2: Pixtral (Mistral vision LLM, same free tier) ───────────
   console.log('[OCR] Starting Pixtral extraction...');
-  const pixtralResult = await extractWithPixtral(pdfBytes, env.MISTRAL_API_KEY, options?.extractionTemplate);
+  const pixtralResult = await withRetry(
+    () => extractWithPixtral(pdfBytes, env.MISTRAL_API_KEY, options?.extractionTemplate),
+    {
+      isRetryable: isTransientOcrFailure,
+      onRetry: (attempt, waitMs, r) =>
+        console.log(`[OCR] Pixtral transient failure (attempt ${attempt}): ${r.error}. Retrying in ${waitMs}ms…`),
+    },
+  );
   rawResponses.pixtral = pixtralResult.rawResponse;
 
   if (pixtralResult.success && pixtralResult.data) {
@@ -128,7 +143,14 @@ export async function processInvoicePDF(
     const pdfBase64 = btoa(binary);
 
     console.log('[OCR] Starting Claude Haiku fallback extraction...');
-    const claudeResult = await extractWithClaude(pdfBase64, env.ANTHROPIC_API_KEY, 'application/pdf', options?.extractionTemplate);
+    const claudeResult = await withRetry(
+      () => extractWithClaude(pdfBase64, env.ANTHROPIC_API_KEY, 'application/pdf', options?.extractionTemplate),
+      {
+        isRetryable: isTransientOcrFailure,
+        onRetry: (attempt, waitMs, r) =>
+          console.log(`[OCR] Claude transient failure (attempt ${attempt}): ${r.error}. Retrying in ${waitMs}ms…`),
+      },
+    );
     rawResponses.claude = claudeResult.rawResponse;
 
     if (claudeResult.success && claudeResult.data) {

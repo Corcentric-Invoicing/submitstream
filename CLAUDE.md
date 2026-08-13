@@ -127,13 +127,16 @@ the same pattern: backdrop div has a comment instead of an `onClick`
 handler. Close via X button or Cancel only. If you add a new modal, follow
 the same pattern.
 
-### Three copies of `allowedFields` in worker validators
+### Supplier field allowlist — single source of truth
 
-`packages/worker/src/api/middleware/validate.ts` has three independent
-`allowedFields` lists. Adding a field to a schema (e.g. `community_id`)
-silently 400s until you also add it to the matching `allowedFields` list.
-TODO: consolidate, but for now: when you add a column, grep `allowedFields`
-and update every match.
+`packages/worker/src/api/middleware/validate.ts` exports
+`PATCH_SUPPLIER_ALLOWED_FIELDS` (derived from `patchSupplierSchema` keys).
+The supplier handler imports and uses it. Adding a new updatable field
+on the supplier row = add to the schema; both the validator's
+"has at least one field" guard and the handler's field-picker pick it up
+automatically. Other entity handlers (customers, invoices) still have
+their own local `allowed` lists — they should be consolidated the same
+way when touched (RSK-15).
 
 ### `cfut_` token in chat is fine, service-role key is not
 

@@ -69,7 +69,7 @@ const STATUS_DOT: Record<HealthStatus, string> = {
 type StatusFilter = 'all' | 'pending' | 'processed' | 'rejected';
 
 interface PageProps {
-  role: 'admin' | 'supplier';
+  role: 'admin' | 'team' | 'supplier';
   userId: string;
   userEmail: string | undefined;
 }

@@ -273,6 +273,24 @@ export const patchSupplierSchema: Schema = {
 };
 
 /**
+ * Single source of truth for updatable supplier fields.
+ *
+ * Derived directly from `patchSupplierSchema` — every schema key is by
+ * definition an allowed field. Previously three separate hand-maintained
+ * copies of this list existed (this file's `allowedFields`, the same in
+ * `handlers/suppliers.ts:patchSupplier`, plus the implicit schema keys),
+ * and any field added to one but not another silently 400'd or was
+ * dropped from persisted updates. Consolidating removes that class of bug
+ * (RSK-15).
+ *
+ * Consumers: `validatePatchSupplier` here uses it for the "at least one
+ * field" guard; the supplier handler imports it for the field-picker loop.
+ */
+export const PATCH_SUPPLIER_ALLOWED_FIELDS = Object.keys(
+  patchSupplierSchema,
+) as ReadonlyArray<keyof typeof patchSupplierSchema>;
+
+/**
  * Custom validator for PATCH supplier: ensures at least one field is provided.
  */
 export function validatePatchSupplier(
@@ -281,29 +299,7 @@ export function validatePatchSupplier(
   const result = validate(body, patchSupplierSchema);
   if (!result.ok) return result;
 
-  // NOTE: this list MUST stay in sync with both `patchSupplierSchema` (above)
-  // and the `allowedFields` list in `handlers/suppliers.ts:patchSupplier()`.
-  // TODO post-demo: consolidate into a single source of truth so adding a
-  // new field in one place doesn't silently 400 in the other two.
-  const allowedFields = [
-    'test_mode', 'name', 'code', 'email_prefix',
-    'contact_email', 'contact_name', 'active', 'extraction_template',
-    // Corcentric DMS config
-    'cor_api_url', 'cor_username', 'cor_password',
-    'cor_vendor_code', 'cor_customer_code', 'cor_community_code',
-    'cor_transaction_type', 'cor_currency_code',
-    'cor_field_mapping', 'cor_mapping_config', 'cor_ingestion_enabled',
-    'cor_remit_code', 'cor_freight_code',
-    // Community assignment — the Communities → Suppliers tab "Assign"
-    // sends ONLY {community_id}, so this list MUST recognize it as a valid
-    // updatable field or the "At least one field" guard rejects the request.
-    'community_id',
-    // PromoStandards Invoice 1.0.0 ingestion config
-    'ps_endpoint_url', 'ps_ws_version',
-    'ps_auth_id', 'ps_auth_password',
-    'ps_ingestion_enabled', 'ps_poll_interval_hours',
-  ];
-  const hasAtLeastOne = allowedFields.some(
+  const hasAtLeastOne = PATCH_SUPPLIER_ALLOWED_FIELDS.some(
     (field) => field in (body as Record<string, unknown>)
   );
 
