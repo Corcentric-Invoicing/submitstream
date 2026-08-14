@@ -32,6 +32,7 @@ import {
   validatePromostandardsInvoice,
   type DuplicateLookup,
 } from '../validation/invoice-validator';
+import { decryptCredential } from '../db/queries';
 
 export interface PullerSupplier {
   id: string;
@@ -39,8 +40,9 @@ export interface PullerSupplier {
   name: string;
   ps_endpoint_url: string | null;
   ps_ws_version: string | null;
-  ps_auth_id: string | null;
-  ps_auth_password: string | null;
+  /** RSK-01: encrypted at rest as bytea; decrypted inside the puller. */
+  ps_auth_id_enc: unknown;
+  ps_auth_password_enc: unknown;
   ps_ingestion_enabled: boolean | null;
   ps_poll_interval_hours: number | null;
   ps_last_pulled_at: string | null;
@@ -77,7 +79,11 @@ export async function pullInvoicesForSupplier(
   if (!supplier.ps_endpoint_url) {
     return failEarly(supplier, 'Missing ps_endpoint_url');
   }
-  if (!supplier.ps_auth_id) {
+
+  // RSK-01: decrypt encrypted-at-rest credentials via SECURITY DEFINER RPC.
+  const psAuthId = await decryptCredential(serviceClient, supplier.ps_auth_id_enc);
+  const psAuthPassword = await decryptCredential(serviceClient, supplier.ps_auth_password_enc);
+  if (!psAuthId) {
     return failEarly(supplier, 'Missing ps_auth_id');
   }
 
@@ -88,8 +94,8 @@ export async function pullInvoicesForSupplier(
 
   const req: GetInvoiceRequest = {
     wsVersion: supplier.ps_ws_version || '1.0.0',
-    id: supplier.ps_auth_id,
-    password: supplier.ps_auth_password || '',
+    id: psAuthId,
+    password: psAuthPassword || '',
     queryType: InvoiceQueryType.AvailableTimestamp,
     availableTimeStamp: availableSince,
   };
@@ -279,7 +285,7 @@ export async function pullAllDueSuppliers(
 ): Promise<{ attempted: number; results: PullResult[] }> {
   const { data: suppliers, error } = await serviceClient
     .from('suppliers')
-    .select('id, code, name, ps_endpoint_url, ps_ws_version, ps_auth_id, ps_auth_password, ps_ingestion_enabled, ps_poll_interval_hours, ps_last_pulled_at')
+    .select('id, code, name, ps_endpoint_url, ps_ws_version, ps_auth_id_enc, ps_auth_password_enc, ps_ingestion_enabled, ps_poll_interval_hours, ps_last_pulled_at')
     .eq('ps_ingestion_enabled', true);
 
   if (error || !suppliers) {

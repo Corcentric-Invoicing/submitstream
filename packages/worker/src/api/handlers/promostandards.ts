@@ -28,8 +28,9 @@ import { callGetInvoices, bucketServiceMessages, extractSoapFault } from '../pro
 import { InvoiceQueryType } from '../promostandards/types';
 
 // Select clause we reuse for the supplier row the puller needs.
+// RSK-01: fetch encrypted-at-rest credential bytea columns; puller decrypts.
 const SUPPLIER_SELECT =
-  'id, code, name, ps_endpoint_url, ps_ws_version, ps_auth_id, ps_auth_password, ps_ingestion_enabled, ps_poll_interval_hours, ps_last_pulled_at';
+  'id, code, name, ps_endpoint_url, ps_ws_version, ps_auth_id_enc, ps_auth_password_enc, ps_ingestion_enabled, ps_poll_interval_hours, ps_last_pulled_at';
 
 /** POST /api/promostandards/pull/:supplierId */
 export async function pullOneSupplierHandler(request: Request, ctx: RequestContext): Promise<Response> {
@@ -165,7 +166,7 @@ export async function healthSummaryHandler(request: Request, ctx: RequestContext
 
   const { data: suppliers, error: supErr } = await ctx.serviceClient
     .from('suppliers')
-    .select('id, name, code, ps_endpoint_url, ps_auth_id, ps_ingestion_enabled, ps_poll_interval_hours, ps_last_pulled_at')
+    .select('id, name, code, ps_endpoint_url, ps_auth_id_enc, ps_ingestion_enabled, ps_poll_interval_hours, ps_last_pulled_at')
     .eq('ps_ingestion_enabled', true)
     .order('name', { ascending: true });
 

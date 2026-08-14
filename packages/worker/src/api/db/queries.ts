@@ -639,6 +639,11 @@ export async function deleteCustomerShipTo(client: SupabaseClient, id: string) {
  * by a specific community when one is named on the invoice.
  */
 export async function getInvoiceWithCorcentricConfig(client: SupabaseClient, invoiceId: string) {
+  // Credentials are fetched as encrypted bytea (cor_username_enc /
+  // cor_password_enc); resolveCorcentricCredentials() in this file
+  // decrypts them via the decrypt_credential RPC at the submission site.
+  // Plaintext credential columns have been removed from these tables
+  // as of RSK-01 close-out.
   return client
     .from('invoices')
     .select(`
@@ -648,20 +653,99 @@ export async function getInvoiceWithCorcentricConfig(client: SupabaseClient, inv
         cor_vendor_code, cor_customer_code, cor_community_code,
         cor_transaction_type, cor_currency_code,
         cor_field_mapping, cor_mapping_config, cor_ingestion_enabled,
-        cor_api_url, cor_username, cor_password,
-        community_id, communities (id, code, name, cor_api_url, cor_username, cor_password),
+        cor_api_url, cor_username_enc, cor_password_enc,
+        community_id, communities (id, code, name, cor_api_url, cor_username_enc, cor_password_enc),
         supplier_communities (
           community_id,
           cor_vendor_code,
           cor_customer_code,
           is_primary,
           active,
-          communities (id, code, name, cor_api_url, cor_username, cor_password)
+          communities (id, code, name, cor_api_url, cor_username_enc, cor_password_enc)
         )
       )
     `)
     .eq('id', invoiceId)
     .single();
+}
+
+/**
+ * Decrypt a bytea credential via the `decrypt_credential` Postgres RPC.
+ * Returns null for null/absent ciphertext. The encryption key lives in
+ * `public.encryption_keys` (locked to service_role); the worker never
+ * sees the key material directly.
+ *
+ * Callers should invoke this for cor_username_enc / cor_password_enc /
+ * ps_auth_password_enc / ps_auth_id_enc columns at submission time.
+ */
+export async function decryptCredential(
+  client: SupabaseClient,
+  ciphertext: unknown,
+): Promise<string | null> {
+  if (ciphertext == null) return null;
+  const { data, error } = await client.rpc('decrypt_credential', { ciphertext });
+  if (error) throw new Error(`decrypt_credential RPC failed: ${error.message}`);
+  return (data as string | null) ?? null;
+}
+
+/**
+ * Encrypt a plaintext credential via the `write_credential` Postgres RPC.
+ * Returns null for null/empty input. The returned bytea should be written
+ * directly to a *_enc column (e.g. cor_password_enc). Worker never sees
+ * the encryption key material.
+ */
+export async function encryptCredential(
+  client: SupabaseClient,
+  plaintext: string | null | undefined,
+): Promise<string | null> {
+  if (plaintext == null || plaintext === '') return null;
+  const { data, error } = await client.rpc('write_credential', { plaintext });
+  if (error) throw new Error(`write_credential RPC failed: ${error.message}`);
+  // Supabase returns bytea as a base64/hex-encoded string; passing that
+  // string back into a bytea column works via the JS client's normal encoding.
+  return (data as string | null) ?? null;
+}
+
+/**
+ * Resolve DMS credentials for a submission, given a joined supplier row.
+ * Prefers community credentials, then supplier legacy fallback, then
+ * global env. Decrypts encrypted-at-rest values via RPC.
+ *
+ * Callers pass the whole joined `suppliers` object from
+ * `getInvoiceWithCorcentricConfig` plus the appropriate community
+ * record (from supplier_communities primary or legacy join) and the
+ * worker env (for env-var fallbacks).
+ */
+export interface ResolvedCorcentricCredentials {
+  apiUrl: string;
+  apiUser: string;
+  apiPass: string;
+  hasAll: boolean;
+}
+export async function resolveCorcentricCredentials(
+  client: SupabaseClient,
+  args: {
+    community: Record<string, unknown> | null;
+    supplier: Record<string, unknown> | null;
+    envApiUrl?: string;
+    envApiUser?: string;
+    envApiPass?: string;
+  },
+): Promise<ResolvedCorcentricCredentials> {
+  const { community, supplier, envApiUrl, envApiUser, envApiPass } = args;
+  // Community creds (preferred)
+  const communityApiUrl = String((community?.cor_api_url as string | null) || '');
+  const communityUser = await decryptCredential(client, community?.cor_username_enc);
+  const communityPass = await decryptCredential(client, community?.cor_password_enc);
+  // Supplier legacy fallback
+  const supplierApiUrl = String((supplier?.cor_api_url as string | null) || '');
+  const supplierUser = await decryptCredential(client, supplier?.cor_username_enc);
+  const supplierPass = await decryptCredential(client, supplier?.cor_password_enc);
+
+  const apiUrl = communityApiUrl || supplierApiUrl || envApiUrl || '';
+  const apiUser = communityUser || supplierUser || envApiUser || '';
+  const apiPass = communityPass || supplierPass || envApiPass || '';
+  return { apiUrl, apiUser, apiPass, hasAll: Boolean(apiUrl && apiUser && apiPass) };
 }
 
 // ── Community Queries ───────────────────────────
@@ -685,26 +769,50 @@ export async function getCommunity(client: SupabaseClient, id: string) {
 }
 
 /**
- * Insert a new community.
+ * Insert a new community. Callers provide plaintext cor_username /
+ * cor_password on the input; we encrypt via write_credential RPC and
+ * write the ciphertext to *_enc columns. Plaintext is never stored.
  */
 export async function insertCommunity(
   client: SupabaseClient,
   data: { code: string; name: string; cor_api_url?: string; cor_username?: string; cor_password?: string },
 ) {
-  return client.from('communities').insert(data).select().single();
+  const row: Record<string, unknown> = {
+    code: data.code,
+    name: data.name,
+  };
+  if (data.cor_api_url !== undefined) row.cor_api_url = data.cor_api_url;
+  if (data.cor_username !== undefined) {
+    row.cor_username_enc = await encryptCredential(client, data.cor_username);
+  }
+  if (data.cor_password !== undefined) {
+    row.cor_password_enc = await encryptCredential(client, data.cor_password);
+  }
+  return client.from('communities').insert(row).select().single();
 }
 
 /**
- * Update a community.
+ * Update a community. Same plaintext-in → ciphertext-out contract as insertCommunity.
  */
 export async function updateCommunity(
   client: SupabaseClient,
   id: string,
   data: { code?: string; name?: string; active?: boolean; cor_api_url?: string | null; cor_username?: string | null; cor_password?: string | null },
 ) {
+  const row: Record<string, unknown> = { updated_at: new Date().toISOString() };
+  if (data.code !== undefined) row.code = data.code;
+  if (data.name !== undefined) row.name = data.name;
+  if (data.active !== undefined) row.active = data.active;
+  if (data.cor_api_url !== undefined) row.cor_api_url = data.cor_api_url;
+  if (data.cor_username !== undefined) {
+    row.cor_username_enc = data.cor_username === null ? null : await encryptCredential(client, data.cor_username);
+  }
+  if (data.cor_password !== undefined) {
+    row.cor_password_enc = data.cor_password === null ? null : await encryptCredential(client, data.cor_password);
+  }
   return client
     .from('communities')
-    .update({ ...data, updated_at: new Date().toISOString() })
+    .update(row)
     .eq('id', id)
     .select()
     .single();

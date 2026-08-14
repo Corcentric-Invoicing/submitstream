@@ -13,7 +13,7 @@ import { mapInvoiceToCorRequest, validateCorRequest } from './mapper';
 import { serializeCorRequest } from './serializer';
 import { submitToCorcentricApi, corStatusToSubmissionStatus } from './client';
 import { insertSubmission, updateSubmission } from '../db/submission-queries';
-import { resolveCorCustomerCodeByName } from '../db/queries';
+import { resolveCorCustomerCodeByName, resolveCorcentricCredentials } from '../db/queries';
 import { resolveMappingConfig, buildConfigFromLegacy } from './mapping-config';
 import type { SupplierCorcentricConfig, CorMappingConfig } from './types';
 
@@ -77,10 +77,13 @@ export function isAutoSubmitEligible(supplier: Record<string, unknown>, globalCo
   const customerCode = join?.cor_customer_code || supplier.cor_customer_code;
   const communityCode = community?.code || supplier.cor_community_code;
 
-  // Check credentials at community level first, then supplier (legacy), then global
+  // Check credentials at community level first, then supplier (legacy), then global.
+  // RSK-01: credentials live encrypted as *_enc bytea. We can't decrypt in a
+  // sync helper (RPC required) — presence check is sufficient here; actual
+  // decryption happens on the submission path via resolveCorcentricCredentials.
   const hasCredentials =
-    (!!community?.cor_username && !!community?.cor_password) ||
-    (!!supplier.cor_username && !!supplier.cor_password) ||
+    (!!community?.cor_username_enc && !!community?.cor_password_enc) ||
+    (!!supplier.cor_username_enc && !!supplier.cor_password_enc) ||
     (!!globalConfig?.apiUser && !!globalConfig?.apiPass);
 
   return (
@@ -152,10 +155,18 @@ export async function autoSubmitToCorentric(
       (supplier.cor_mapping_config as Partial<CorMappingConfig>) || buildConfigFromLegacy(supplier)
     );
 
-    // Resolve credentials: community → supplier (legacy) → global fallback
-    const resolvedApiUrl = String(communityRec?.cor_api_url || '') || String(supplier.cor_api_url || '') || config.apiUrl || '';
-    const resolvedApiUser = String(communityRec?.cor_username || '') || String(supplier.cor_username || '') || config.apiUser || '';
-    const resolvedApiPass = String(communityRec?.cor_password || '') || String(supplier.cor_password || '') || config.apiPass || '';
+    // Resolve credentials: community → supplier (legacy) → global fallback.
+    // RSK-01: decrypts *_enc bytea columns via decrypt_credential RPC.
+    const resolved = await resolveCorcentricCredentials(config.serviceClient, {
+      community: communityRec,
+      supplier,
+      envApiUrl: config.apiUrl,
+      envApiUser: config.apiUser,
+      envApiPass: config.apiPass,
+    });
+    const resolvedApiUrl = resolved.apiUrl;
+    const resolvedApiUser = resolved.apiUser;
+    const resolvedApiPass = resolved.apiPass;
 
     if (!resolvedApiUrl || !resolvedApiUser || !resolvedApiPass) {
       console.warn(`[Corcentric Auto-Submit] No API credentials for community/supplier ${supplierId}, skipping`);

@@ -266,10 +266,15 @@ export const patchSupplierSchema: Schema = {
   // wasn't picking up community_id from a malformed body shape. Adding
   // here for schema completeness + future audits.
   community_id: optional(string()),
-  // Note: PromoStandards (ps_*) fields are accepted by the handler's
-  // allowedFields list but not strictly validated here — unknown fields
-  // pass through validate() unchecked, so the handler's update goes
-  // through. No need to add ps_* validators unless we want type safety.
+  // PromoStandards config — added explicitly so the schema-derived
+  // PATCH_SUPPLIER_ALLOWED_FIELDS list picks them up. Before adding
+  // these, PS credential updates from the portal were silently dropped.
+  ps_endpoint_url: optional(string()),
+  ps_ws_version: optional(string()),
+  ps_auth_id: optional(string()),
+  ps_auth_password: optional(string()),
+  ps_ingestion_enabled: optional(boolean()),
+  ps_poll_interval_hours: optional(string()),
 };
 
 /**

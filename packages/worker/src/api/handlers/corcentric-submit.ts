@@ -18,7 +18,11 @@
 import { RequestContext } from '../types';
 import { jsonResponse, errorResponse } from '../middleware/response';
 import { extractPathId } from '../middleware/safeParse';
-import { getInvoiceWithCorcentricConfig, resolveCorCustomerCodeByName } from '../db/queries';
+import {
+  getInvoiceWithCorcentricConfig,
+  resolveCorCustomerCodeByName,
+  resolveCorcentricCredentials,
+} from '../db/queries';
 import {
   insertSubmission,
   updateSubmission,
@@ -144,11 +148,20 @@ export async function submitToCorcentricHandler(
     );
   }
 
-  // ── 3. Check API credentials (community → supplier legacy fallback → env) ──
-  // communityRec already resolved above (step 2) for community code
-  const apiUrl = String(communityRec?.cor_api_url || '') || String(supplier.cor_api_url || '') || ctx.env.CORCENTRIC_API_URL;
-  const apiUser = String(communityRec?.cor_username || '') || String(supplier.cor_username || '') || ctx.env.CORCENTRIC_USERNAME;
-  const apiPass = String(communityRec?.cor_password || '') || String(supplier.cor_password || '') || ctx.env.CORCENTRIC_PASSWORD;
+  // ── 3. Resolve API credentials (community → supplier legacy → env) ──
+  // Credentials live encrypted-at-rest as bytea in cor_username_enc /
+  // cor_password_enc. resolveCorcentricCredentials() decrypts via the
+  // decrypt_credential RPC (RSK-01). Worker never handles the key.
+  const creds = await resolveCorcentricCredentials(ctx.serviceClient, {
+    community: communityRec,
+    supplier,
+    envApiUrl: ctx.env.CORCENTRIC_API_URL,
+    envApiUser: ctx.env.CORCENTRIC_USERNAME,
+    envApiPass: ctx.env.CORCENTRIC_PASSWORD,
+  });
+  const apiUrl = creds.apiUrl;
+  const apiUser = creds.apiUser;
+  const apiPass = creds.apiPass;
 
   // Credential check. Live submit always requires creds. Dry run with
   // creds = full round-trip ping to Corcentric (path B); without creds

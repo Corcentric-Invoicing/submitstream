@@ -140,8 +140,9 @@ export interface GetVoidedInvoiceResponse {
 export interface SupplierPromostandardsConfig {
   ps_endpoint_url: string | null;
   ps_ws_version: string | null;        // defaults to '1.0.0'
-  ps_auth_id: string | null;
-  ps_auth_password: string | null;
+  /** RSK-01: bytea, decrypted via decrypt_credential RPC before use. */
+  ps_auth_id_enc: unknown;
+  ps_auth_password_enc: unknown;
   ps_ingestion_enabled: boolean;
   ps_poll_interval_hours: number | null;
   ps_last_pulled_at: string | null;    // ISO string from Postgres
@@ -154,6 +155,6 @@ export function isPromostandardsReady(
   return (
     cfg.ps_ingestion_enabled === true &&
     !!cfg.ps_endpoint_url &&
-    !!cfg.ps_auth_id
+    !!cfg.ps_auth_id_enc
   );
 }

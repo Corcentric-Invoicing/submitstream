@@ -281,15 +281,15 @@ export async function uploadInvoice(request: Request, ctx: RequestContext): Prom
         cor_vendor_code, cor_customer_code, cor_community_code,
         cor_transaction_type, cor_currency_code,
         cor_field_mapping, cor_mapping_config, cor_ingestion_enabled,
-        cor_api_url, cor_username, cor_password,
-        community_id, communities (id, code, name, cor_api_url, cor_username, cor_password),
+        cor_api_url, cor_username_enc, cor_password_enc,
+        community_id, communities (id, code, name, cor_api_url, cor_username_enc, cor_password_enc),
         supplier_communities (
           community_id,
           cor_vendor_code,
           cor_customer_code,
           is_primary,
           active,
-          communities (id, code, name, cor_api_url, cor_username, cor_password)
+          communities (id, code, name, cor_api_url, cor_username_enc, cor_password_enc)
         )
       `)
       .eq('id', supplierId)

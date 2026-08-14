@@ -19,11 +19,12 @@ import {
 } from '../db/queries';
 
 // All handlers in this file MUST gate on requireAdmin. Communities hold
-// plaintext Corcentric DMS credentials (cor_username, cor_password,
-// cor_api_url), so unauthenticated or supplier-role access here would
-// leak credentials and let attackers redirect submissions to a hostile
-// endpoint. Service-role-client reads bypass RLS, so the check has to
-// happen in the handler — RLS lockdown alone does not protect this path.
+// Corcentric DMS credentials (cor_username_enc, cor_password_enc — RSK-01
+// encrypted-at-rest bytea) plus cor_api_url, so unauthenticated or
+// supplier-role access here would leak credentials and let attackers
+// redirect submissions to a hostile endpoint. Service-role-client reads
+// bypass RLS, so the check has to happen in the handler — RLS lockdown
+// alone does not protect this path.
 
 /**
  * GET /api/communities — list all active communities

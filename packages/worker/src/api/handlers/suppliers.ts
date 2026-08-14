@@ -2,6 +2,7 @@
 // Supplier Handlers — list, create, update, delete
 // ============================================
 
+import type { SupabaseClient } from '@supabase/supabase-js';
 import { RequestContext } from '../types';
 import { jsonResponse, errorResponse } from '../middleware/response';
 import { requireAdmin } from '../middleware/auth';
@@ -21,7 +22,39 @@ import {
   deleteAllAssignmentsForSupplier,
   listSupplierUsers,
   setUserSupplier,
+  resolveCorcentricCredentials,
+  encryptCredential,
 } from '../db/queries';
+
+/**
+ * RSK-01: intercept plaintext credential fields on inbound PATCH bodies,
+ * encrypt them via write_credential RPC, and rewrite the payload so the
+ * DB update targets the *_enc bytea columns. Plaintext columns no longer
+ * exist post-drop-migration; writing to them would 400.
+ */
+const CREDENTIAL_FIELD_MAP: Record<string, string> = {
+  cor_username: 'cor_username_enc',
+  cor_password: 'cor_password_enc',
+  ps_auth_id: 'ps_auth_id_enc',
+  ps_auth_password: 'ps_auth_password_enc',
+};
+
+async function rewriteCredentialFields(
+  client: SupabaseClient,
+  data: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(data)) {
+    const encKey = CREDENTIAL_FIELD_MAP[k];
+    if (encKey) {
+      out[encKey] = v === null || v === '' ? null : await encryptCredential(client, String(v));
+    } else {
+      out[k] = v;
+    }
+  }
+  return out;
+}
+
 
 /**
  * List all suppliers visible to the current user (filtered by RLS policies).
@@ -106,7 +139,13 @@ export async function patchSupplier(request: Request, ctx: RequestContext): Prom
     }
   }
 
-  const { data, error } = await updateSupplier(ctx.userClient, supplierId, updateData);
+  // RSK-01: rewrite plaintext credential fields (cor_username, cor_password,
+  // ps_auth_id, ps_auth_password) into encrypted-at-rest *_enc bytea via
+  // write_credential RPC before the DB update. The plaintext columns no
+  // longer exist on the row post-drop-migration.
+  const encryptedUpdateData = await rewriteCredentialFields(ctx.serviceClient, updateData);
+
+  const { data, error } = await updateSupplier(ctx.userClient, supplierId, encryptedUpdateData);
   if (error) return errorResponse(sanitizeDbError(error.message, 500), 500);
   return jsonResponse({ success: true, data });
 }
@@ -231,20 +270,29 @@ export async function testSupplierConnection(request: Request, ctx: RequestConte
   const supplierId = extractPathId(ctx.path.replace('/test-connection', ''));
   if (!supplierId) return errorResponse('Invalid supplier ID', 400);
 
-  // Load supplier config
+  // Load supplier config. RSK-01: fetch encrypted-at-rest credential columns
+  // (*_enc bytea) rather than plaintext; decryption happens below via RPC.
   const { data: supplier, error } = await ctx.serviceClient
     .from('suppliers')
-    .select('id, name, cor_api_url, cor_username, cor_password, cor_vendor_code, cor_customer_code, cor_community_code, cor_currency_code, community_id, communities (id, code, name, cor_api_url, cor_username, cor_password)')
+    .select('id, name, cor_api_url, cor_username_enc, cor_password_enc, cor_vendor_code, cor_customer_code, cor_community_code, cor_currency_code, community_id, communities (id, code, name, cor_api_url, cor_username_enc, cor_password_enc)')
     .eq('id', supplierId)
     .single();
 
   if (error || !supplier) return errorResponse('Supplier not found', 404);
 
-  // Resolve credentials: community → supplier (legacy) → global fallback
+  // Resolve credentials: community → supplier (legacy) → global fallback.
+  // RSK-01: decrypts *_enc bytea via decrypt_credential RPC (SECURITY DEFINER).
   const communityRec = (supplier as Record<string, unknown>).communities as Record<string, unknown> | null;
-  const apiUrl = String(communityRec?.cor_api_url || '') || supplier.cor_api_url || ctx.env.CORCENTRIC_API_URL;
-  const username = String(communityRec?.cor_username || '') || supplier.cor_username || ctx.env.CORCENTRIC_USERNAME;
-  const password = String(communityRec?.cor_password || '') || supplier.cor_password || ctx.env.CORCENTRIC_PASSWORD;
+  const resolvedCreds = await resolveCorcentricCredentials(ctx.serviceClient, {
+    community: communityRec,
+    supplier: supplier as unknown as Record<string, unknown>,
+    envApiUrl: ctx.env.CORCENTRIC_API_URL,
+    envApiUser: ctx.env.CORCENTRIC_USERNAME,
+    envApiPass: ctx.env.CORCENTRIC_PASSWORD,
+  });
+  const apiUrl = resolvedCreds.apiUrl;
+  const username = resolvedCreds.apiUser;
+  const password = resolvedCreds.apiPass;
 
   if (!apiUrl || !username || !password) {
     return jsonResponse({
